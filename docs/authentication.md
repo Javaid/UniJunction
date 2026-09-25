@@ -245,24 +245,19 @@ router.post('/x', requireAuth, requireRole('SUPER_ADMIN'), controller.x);
 `401` (no/invalid authentication) and `403` (authenticated, but missing
 the required role/permission) are kept strictly distinct throughout.
 
-### University-scoped authorization (future)
+### University-scoped authorization (implemented in Chunk 04)
 
-Not implemented in this chunk. The role/permission check above is
-**global** — a `UNIVERSITY_ADMIN` with `UNIVERSITY_UPDATE` can act on
-*any* university, not just their own, because there is currently no
-`user ↔ university` relationship to scope against (that lands with the
-University Management chunk, once `university_id` is attached to a
-user's profile). The intended future shape:
-
-```
-Platform Admin (SUPER_ADMIN)  → all universities
-University Admin              → own university only
-Faculty                       → own academic context
-Student                       → own profile + permitted public network
-```
-
-This is intentionally not faked with a half-working scoping check before
-the underlying relationships exist.
+This section originally described the global-only limitation of Chunk
+03's RBAC: a `UNIVERSITY_ADMIN` with `UNIVERSITY_UPDATE` could act on
+*any* university, because no `user ↔ university` relationship existed to
+scope against. Chunk 04 introduced that relationship (`university_memberships`,
+distinct from the global `roles` system) and a reusable authorization
+service (`assertUniversityAccess`) that checks role **and** membership
+together before any university-scoped write is allowed. See
+[`university-management.md`](./university-management.md) for the full
+design — the role/permission check above still gates *what* an action is;
+`assertUniversityAccess` additionally gates *which university* it can be
+performed against.
 
 ## 10. Safe User Serialization
 

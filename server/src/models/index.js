@@ -25,6 +25,9 @@ const definePermission = require('./permission.model');
 const defineRolePermission = require('./role-permission.model');
 const defineRefreshToken = require('./refresh-token.model');
 const defineEmailVerificationToken = require('./email-verification-token.model');
+const defineUniversityDomain = require('./university-domain.model');
+const defineUniversityMembership = require('./university-membership.model');
+const defineAuditLog = require('./audit-log.model');
 
 const User = defineUser(sequelize);
 const Role = defineRole(sequelize);
@@ -37,6 +40,9 @@ const Permission = definePermission(sequelize);
 const RolePermission = defineRolePermission(sequelize);
 const RefreshToken = defineRefreshToken(sequelize);
 const EmailVerificationToken = defineEmailVerificationToken(sequelize);
+const UniversityDomain = defineUniversityDomain(sequelize);
+const UniversityMembership = defineUniversityMembership(sequelize);
+const AuditLog = defineAuditLog(sequelize);
 
 // ---- Identity: User <-> Role (many-to-many via UserRole) ----------------
 // A pure join table, so both sides cascade if a user or role is ever
@@ -128,6 +134,41 @@ User.hasMany(EmailVerificationToken, {
 });
 EmailVerificationToken.belongsTo(User, { foreignKey: 'userId' });
 
+// ---- Institutional membership & domains (Chunk 04) -------------------------
+// A university with domains/memberships attached can't be hard-deleted
+// out from under them (RESTRICT) — same policy as faculties/departments/
+// programs. A user's own memberships are per-user artifacts and cascade
+// with the user (CASCADE) — same policy as user_roles/refresh_tokens.
+University.hasMany(UniversityDomain, {
+  foreignKey: 'universityId',
+  as: 'domains',
+  onDelete: 'RESTRICT',
+});
+UniversityDomain.belongsTo(University, { foreignKey: 'universityId', as: 'university' });
+
+University.hasMany(UniversityMembership, {
+  foreignKey: 'universityId',
+  as: 'memberships',
+  onDelete: 'RESTRICT',
+});
+UniversityMembership.belongsTo(University, { foreignKey: 'universityId', as: 'university' });
+
+User.hasMany(UniversityMembership, {
+  foreignKey: 'userId',
+  as: 'universityMemberships',
+  onDelete: 'CASCADE',
+});
+UniversityMembership.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+// ---- Audit trail (Chunk 04) -------------------------------------------------
+// An append-only log entry survives its actor or university being
+// removed — SET NULL keeps the historical record instead of losing it.
+User.hasMany(AuditLog, { foreignKey: 'actorUserId', as: 'auditLogs', onDelete: 'SET NULL' });
+AuditLog.belongsTo(User, { foreignKey: 'actorUserId', as: 'actor' });
+
+University.hasMany(AuditLog, { foreignKey: 'universityId', as: 'auditLogs', onDelete: 'SET NULL' });
+AuditLog.belongsTo(University, { foreignKey: 'universityId', as: 'university' });
+
 module.exports = {
   sequelize,
   User,
@@ -141,4 +182,7 @@ module.exports = {
   RolePermission,
   RefreshToken,
   EmailVerificationToken,
+  UniversityDomain,
+  UniversityMembership,
+  AuditLog,
 };

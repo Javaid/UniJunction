@@ -1,5 +1,5 @@
 const { DataTypes } = require('sequelize');
-const { UNIVERSITY_STATUS } = require('../utils/enums');
+const { UNIVERSITY_STATUS, VERIFICATION_STATUS } = require('../utils/enums');
 
 /**
  * The organizational root of the institution hierarchy
@@ -9,10 +9,15 @@ const { UNIVERSITY_STATUS } = require('../utils/enums');
  * not physical (per-tenant databases), since users must be discoverable
  * across universities.
  *
- * `email_domain` holds a single convenience domain for now. Institutions
- * with multiple verified domains will need a dedicated
- * `university_domains` table — documented as a future domain, not built
- * here, since it has no consumer yet in this chunk.
+ * `email_domain` holds a single convenience domain kept for backward
+ * compatibility with Chunk 02; multi-domain support is now the dedicated
+ * `university_domains` table (Chunk 04) — see
+ * docs/university-management.md.
+ *
+ * `status` (operational: PENDING/ACTIVE/SUSPENDED/DEACTIVATED) and
+ * `verificationStatus` (institutional: UNVERIFIED/PENDING/VERIFIED/
+ * REJECTED) are deliberately independent dimensions — see
+ * docs/university-management.md, "University lifecycle".
  */
 module.exports = (sequelize) =>
   sequelize.define(
@@ -87,10 +92,20 @@ module.exports = (sequelize) =>
         type: DataTypes.DATE,
         allowNull: true,
       },
+      verificationStatus: {
+        type: DataTypes.ENUM(...Object.values(VERIFICATION_STATUS)),
+        allowNull: false,
+        defaultValue: VERIFICATION_STATUS.UNVERIFIED,
+      },
     },
     {
       tableName: 'universities',
       paranoid: true,
-      indexes: [{ fields: ['status'] }, { fields: ['country'] }, { fields: ['city'] }],
+      indexes: [
+        { fields: ['status'] },
+        { fields: ['country'] },
+        { fields: ['city'] },
+        { fields: ['verification_status'] },
+      ],
     }
   );

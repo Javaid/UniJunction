@@ -38,4 +38,57 @@ const INITIAL_ROLE_NAMES = Object.freeze([
   'STUDENT',
 ]);
 
-module.exports = { USER_STATUS, UNIVERSITY_STATUS, ORG_UNIT_STATUS, INITIAL_ROLE_NAMES };
+// Institutional verification is a separate dimension from
+// universities.status (operational state) — see
+// docs/university-management.md, "University lifecycle". Performed only
+// by a SUPER_ADMIN in this chunk; no external verification integration.
+const VERIFICATION_STATUS = Object.freeze({
+  UNVERIFIED: 'UNVERIFIED',
+  PENDING: 'PENDING',
+  VERIFIED: 'VERIFIED',
+  REJECTED: 'REJECTED',
+});
+
+// What a user IS to a university, independent of platform role — see
+// docs/university-management.md, "Role vs. membership".
+const MEMBERSHIP_TYPE = Object.freeze({
+  STUDENT: 'STUDENT',
+  FACULTY: 'FACULTY',
+  RESEARCHER: 'RESEARCHER',
+  STAFF: 'STAFF',
+  ADMIN: 'ADMIN',
+});
+
+const MEMBERSHIP_STATUS = Object.freeze({
+  PENDING: 'PENDING',
+  ACTIVE: 'ACTIVE',
+  SUSPENDED: 'SUSPENDED',
+  ENDED: 'ENDED',
+});
+
+// Program degree levels: VARCHAR at the DB layer (not an ENUM — see
+// program.model.js), validated against this allow-list at the API
+// boundary. New levels are added here (and to database/seed data if a
+// UI dropdown needs seeding) — never require a schema migration, since
+// the column itself is already an open VARCHAR(30).
+const DEGREE_LEVELS = Object.freeze([
+  'CERTIFICATE',
+  'DIPLOMA',
+  'ASSOCIATE',
+  'BACHELOR',
+  'MASTER',
+  'MS',
+  'MPHIL',
+  'PHD',
+]);
+
+module.exports = {
+  USER_STATUS,
+  UNIVERSITY_STATUS,
+  ORG_UNIT_STATUS,
+  INITIAL_ROLE_NAMES,
+  VERIFICATION_STATUS,
+  MEMBERSHIP_TYPE,
+  MEMBERSHIP_STATUS,
+  DEGREE_LEVELS,
+};

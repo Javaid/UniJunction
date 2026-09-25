@@ -1,9 +1,12 @@
-# Database ERD — Chunks 02–03 (Identity, Institution, RBAC & Auth Tokens)
+# Database ERD — Chunks 02–04 (Identity, Institution, RBAC, Auth Tokens & University Management)
 
 This diagram covers only the tables implemented so far. See
 [`database-guidelines.md`](./database-guidelines.md) for the domains
-planned for later chunks, and [`authentication.md`](./authentication.md)
-for how the RBAC and token tables are used.
+planned for later chunks, [`authentication.md`](./authentication.md) for
+how the RBAC and token tables are used, and
+[`university-management.md`](./university-management.md) for how the
+Chunk 04 tables (`university_domains`, `university_memberships`,
+`audit_logs`) are used.
 
 ```mermaid
 erDiagram
@@ -20,6 +23,12 @@ erDiagram
     FACULTIES ||--o{ DEPARTMENTS : "optionally groups"
     FACULTIES ||--o{ PROGRAMS : "optionally groups"
     DEPARTMENTS ||--o{ PROGRAMS : "offers"
+
+    UNIVERSITIES ||--o{ UNIVERSITY_DOMAINS : "registers"
+    UNIVERSITIES ||--o{ UNIVERSITY_MEMBERSHIPS : "has members via"
+    USERS ||--o{ UNIVERSITY_MEMBERSHIPS : "holds"
+    USERS ||--o{ AUDIT_LOGS : "acts as (optional)"
+    UNIVERSITIES ||--o{ AUDIT_LOGS : "concerns (optional)"
 
     USERS {
         bigint id PK
@@ -109,6 +118,7 @@ erDiagram
         varchar_20 postal_code
         enum status
         datetime verified_at
+        enum verification_status
         datetime created_at
         datetime updated_at
         datetime deleted_at
@@ -157,6 +167,44 @@ erDiagram
         datetime updated_at
         datetime deleted_at
     }
+
+    UNIVERSITY_DOMAINS {
+        bigint id PK
+        char_36 uuid UK
+        bigint university_id FK
+        varchar_255 domain UK "globally unique, bare hostname only"
+        boolean is_primary
+        enum status
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at
+    }
+
+    UNIVERSITY_MEMBERSHIPS {
+        bigint id PK
+        char_36 uuid UK
+        bigint user_id FK
+        bigint university_id FK
+        enum membership_type "STUDENT/FACULTY/RESEARCHER/STAFF/ADMIN"
+        enum status "PENDING/ACTIVE/SUSPENDED/ENDED"
+        boolean is_primary "at most one true per user, service-enforced"
+        datetime joined_at
+        datetime left_at
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at
+    }
+
+    AUDIT_LOGS {
+        bigint id PK
+        bigint actor_user_id "FK, nullable"
+        varchar_100 action
+        varchar_50 entity_type
+        bigint entity_id
+        bigint university_id "FK, nullable"
+        json metadata
+        datetime created_at
+    }
 ```
 
 ## Reading this diagram
@@ -184,6 +232,27 @@ erDiagram
   (and optionally `faculty_id`) directly for the same reason — querying
   "all programs at university X" should never require walking through an
   optional faculty relationship.
+- `UNIVERSITY_DOMAINS` (Chunk 04) is one-to-many from `UNIVERSITIES`, but
+  `domain` is **globally** unique across the whole table, not just within
+  a university — a DNS domain can only ever belong to one institution.
+- `UNIVERSITY_MEMBERSHIPS` (Chunk 04) is the many-to-many join between
+  `USERS` and `UNIVERSITIES`, carrying a `membership_type` and `status` —
+  this is deliberately **not** the same relationship as `USERS ↔ ROLES`.
+  A role (`UNIVERSITY_ADMIN`) is a global platform capability; a
+  membership is *which* university and *in what capacity*. The two are
+  checked together only by the university-scoped authorization service,
+  never inferred from one another — see
+  [`university-management.md`](./university-management.md) §2 and §8. A
+  user may hold several memberships (even across several universities),
+  but at most one may have `is_primary = true` at a time, enforced at the
+  service layer rather than by a DB constraint (MySQL has no
+  partial/filtered unique index).
+- `AUDIT_LOGS` (Chunk 04) optionally references both `USERS`
+  (`actor_user_id`) and `UNIVERSITIES` (`university_id`) — both nullable,
+  both `ON DELETE SET NULL`, since an audit entry must survive the
+  removal of the thing it references. It is never addressed by its own
+  `id` from any API endpoint (queried only by `entity_type`/`entity_id`,
+  `university_id`, or `actor_user_id`), so it has no `uuid` column.
 
 Full column types, constraints, indexes, and `ON DELETE` behavior are in
 [`../database/schema.sql`](../database/schema.sql) and explained in

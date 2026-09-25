@@ -36,29 +36,95 @@ const INITIAL_ROLES = [
 const INITIAL_PERMISSIONS = [
   'USER_VIEW',
   'USER_UPDATE',
-  'UNIVERSITY_VIEW',
-  'UNIVERSITY_CREATE',
-  'UNIVERSITY_UPDATE',
   'ROLE_VIEW',
   'ROLE_ASSIGN',
   'SYSTEM_ADMIN',
+  'UNIVERSITY_VIEW',
+  'UNIVERSITY_CREATE',
+  'UNIVERSITY_UPDATE',
+  'UNIVERSITY_VERIFY',
+  'UNIVERSITY_STATUS_UPDATE',
+  'UNIVERSITY_ADMIN_VIEW',
+  'UNIVERSITY_ADMIN_ASSIGN',
+  'UNIVERSITY_MEMBER_VIEW',
+  'UNIVERSITY_MEMBER_CREATE',
+  'UNIVERSITY_MEMBER_UPDATE',
+  'UNIVERSITY_DOMAIN_VIEW',
+  'UNIVERSITY_DOMAIN_MANAGE',
+  'FACULTY_VIEW',
+  'FACULTY_CREATE',
+  'FACULTY_UPDATE',
+  'FACULTY_STATUS_UPDATE',
+  'DEPARTMENT_VIEW',
+  'DEPARTMENT_CREATE',
+  'DEPARTMENT_UPDATE',
+  'DEPARTMENT_STATUS_UPDATE',
+  'PROGRAM_VIEW',
+  'PROGRAM_CREATE',
+  'PROGRAM_UPDATE',
+  'PROGRAM_STATUS_UPDATE',
 ];
 
+// Mirrors database/seed_rbac.sql exactly (§29/§30) — see
+// docs/university-management.md, "Permissions".
 const ROLE_PERMISSION_MAP = {
   SUPER_ADMIN: [
     'SYSTEM_ADMIN',
     'USER_VIEW',
     'USER_UPDATE',
+    'ROLE_VIEW',
+    'ROLE_ASSIGN',
     'UNIVERSITY_VIEW',
     'UNIVERSITY_CREATE',
     'UNIVERSITY_UPDATE',
-    'ROLE_VIEW',
-    'ROLE_ASSIGN',
+    'UNIVERSITY_VERIFY',
+    'UNIVERSITY_STATUS_UPDATE',
+    'UNIVERSITY_ADMIN_VIEW',
+    'UNIVERSITY_ADMIN_ASSIGN',
+    'UNIVERSITY_MEMBER_VIEW',
+    'UNIVERSITY_MEMBER_CREATE',
+    'UNIVERSITY_MEMBER_UPDATE',
+    'UNIVERSITY_DOMAIN_VIEW',
+    'UNIVERSITY_DOMAIN_MANAGE',
+    'FACULTY_VIEW',
+    'FACULTY_CREATE',
+    'FACULTY_UPDATE',
+    'FACULTY_STATUS_UPDATE',
+    'DEPARTMENT_VIEW',
+    'DEPARTMENT_CREATE',
+    'DEPARTMENT_UPDATE',
+    'DEPARTMENT_STATUS_UPDATE',
+    'PROGRAM_VIEW',
+    'PROGRAM_CREATE',
+    'PROGRAM_UPDATE',
+    'PROGRAM_STATUS_UPDATE',
   ],
-  UNIVERSITY_ADMIN: ['USER_VIEW', 'UNIVERSITY_VIEW', 'UNIVERSITY_UPDATE'],
-  STUDENT: ['USER_VIEW'],
-  FACULTY: ['USER_VIEW'],
-  RESEARCHER: ['USER_VIEW'],
+  UNIVERSITY_ADMIN: [
+    'USER_VIEW',
+    'UNIVERSITY_VIEW',
+    'UNIVERSITY_UPDATE',
+    'UNIVERSITY_ADMIN_VIEW',
+    'UNIVERSITY_MEMBER_VIEW',
+    'UNIVERSITY_MEMBER_CREATE',
+    'UNIVERSITY_MEMBER_UPDATE',
+    'UNIVERSITY_DOMAIN_VIEW',
+    'UNIVERSITY_DOMAIN_MANAGE',
+    'FACULTY_VIEW',
+    'FACULTY_CREATE',
+    'FACULTY_UPDATE',
+    'FACULTY_STATUS_UPDATE',
+    'DEPARTMENT_VIEW',
+    'DEPARTMENT_CREATE',
+    'DEPARTMENT_UPDATE',
+    'DEPARTMENT_STATUS_UPDATE',
+    'PROGRAM_VIEW',
+    'PROGRAM_CREATE',
+    'PROGRAM_UPDATE',
+    'PROGRAM_STATUS_UPDATE',
+  ],
+  STUDENT: ['USER_VIEW', 'UNIVERSITY_VIEW'],
+  FACULTY: ['USER_VIEW', 'UNIVERSITY_VIEW'],
+  RESEARCHER: ['USER_VIEW', 'UNIVERSITY_VIEW'],
 };
 
 /** Mirrors database/seed_rbac.sql so tests never depend on it having been run. */
@@ -97,6 +163,24 @@ const resetAuthTables = async () => {
 };
 
 /**
+ * Wipes per-run institutional data (Chunk 04). Separate from
+ * resetAuthTables since not every test file needs universities, and
+ * university rows are also referenced by user_roles-adjacent fixtures in
+ * some auth tests — clearing it unconditionally there would be a
+ * behavior change to already-passing Chunk 03 tests.
+ */
+const resetInstitutionTables = async () => {
+  await sequelize.query('SET FOREIGN_KEY_CHECKS = 0');
+  await Promise.all(
+    ['audit_logs', 'university_memberships', 'university_domains', 'programs', 'departments', 'faculties'].map(
+      (table) => sequelize.query(`DELETE FROM ${table}`)
+    )
+  );
+  await sequelize.query('DELETE FROM universities');
+  await sequelize.query('SET FOREIGN_KEY_CHECKS = 1');
+};
+
+/**
  * `it()` wrapper that soft-skips (warns, passes trivially) when the
  * database isn't reachable, instead of every test repeating the same
  * `if (!dbReady) return;` guard. `dbReadyGetter` reads a `let dbReady`
@@ -113,4 +197,4 @@ const itIfDb = (dbReadyGetter) => (name, fn) => {
   });
 };
 
-module.exports = { isDbAvailable, seedRbac, resetAuthTables, itIfDb };
+module.exports = { isDbAvailable, seedRbac, resetAuthTables, resetInstitutionTables, itIfDb };

@@ -1,7 +1,7 @@
 const { sequelize, User, Role } = require('../../models');
 const ApiError = require('../../utils/ApiError');
 const { USER_STATUS } = require('../../utils/enums');
-const { toPublicUser } = require('../../utils/userSerializer');
+const { toPublicUser, toAuthenticatedUser } = require('../../utils/userSerializer');
 const { hashPassword, verifyPassword } = require('./password.service');
 const {
   signAccessToken,
@@ -119,7 +119,7 @@ const login = async ({ email, password }) => {
     accessToken,
     refreshToken,
     expiresIn,
-    user: toPublicUser(withRoles),
+    user: toAuthenticatedUser(withRoles),
   };
 };
 
@@ -157,7 +157,7 @@ const logout = async (rawRefreshToken) => {
 
 const getCurrentUser = async (userId) => {
   const user = await withRolesAndPermissions(userId);
-  return toPublicUser(user);
+  return toAuthenticatedUser(user);
 };
 
 /**

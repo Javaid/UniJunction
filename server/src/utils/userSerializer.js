@@ -24,4 +24,23 @@ const toPublicUser = (user) => {
   };
 };
 
-module.exports = { toPublicUser };
+/**
+ * Same as toPublicUser, plus the user's own effective permissions
+ * (union of every role's permissions). Used only for a user's OWN
+ * session context (login, /auth/me) — the frontend's permission-gated
+ * UI (Chunk 04, `Can`) needs this to decide what to show, but showing
+ * someone ELSE's permissions (e.g. in an admin user listing) has no
+ * legitimate use, so `toPublicUser` deliberately doesn't include it.
+ * Requires `roles` to have been eager-loaded with their `permissions`
+ * (see `withRolesAndPermissions` in auth.service.js).
+ */
+const toAuthenticatedUser = (user) => {
+  const plain = typeof user.toJSON === 'function' ? user.toJSON() : user;
+  const permissions = Array.isArray(plain.roles)
+    ? [...new Set(plain.roles.flatMap((role) => (role.permissions || []).map((p) => p.name)))]
+    : [];
+
+  return { ...toPublicUser(user), permissions };
+};
+
+module.exports = { toPublicUser, toAuthenticatedUser };

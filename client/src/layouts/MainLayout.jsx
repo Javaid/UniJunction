@@ -8,10 +8,13 @@ const navLinkClasses = ({ isActive }) =>
     isActive ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:text-brand-700'
   }`;
 
+const ADMIN_ROLES = ['SUPER_ADMIN', 'UNIVERSITY_ADMIN'];
+
 const MainLayout = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { isAuthenticated, user } = useSelector((state) => state.auth);
+  const isInstitutionalAdmin = (user?.roles || []).some((role) => ADMIN_ROLES.includes(role));
 
   const handleLogout = async () => {
     await dispatch(logoutUser());
@@ -31,6 +34,11 @@ const MainLayout = () => {
                 <NavLink to="/dashboard" className={navLinkClasses}>
                   Dashboard
                 </NavLink>
+                {isInstitutionalAdmin && (
+                  <NavLink to="/admin" className={navLinkClasses}>
+                    Admin
+                  </NavLink>
+                )}
                 {user?.first_name && (
                   <span className="px-3 text-sm text-slate-500">Hi, {user.first_name}</span>
                 )}

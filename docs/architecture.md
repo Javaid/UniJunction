@@ -89,21 +89,26 @@ Request → helmet → cors → body parsing → morgan (logging)
         → (on error) centralized errorHandler
 ```
 
-### Future domain modules
+### Domain modules
 
-`server/src/modules/` is the seam for upcoming domains: `auth`, `users`,
-`universities`, `departments`, `programs`, `students`, `faculty`,
-`researchers`, `skills`, `interests`, `research`, `projects`,
-`connections`, `mentorship`, `messaging`, `events`, `opportunities`,
-`notifications`, `administration`. Each will be self-contained
-(controller, routes, service, validator) and mounted in
+`server/src/modules/` is the seam for self-contained domains. Implemented
+so far: `auth` (Chunk 03 — registration, login, tokens, RBAC middleware)
+and `university` (Chunk 04 — universities, faculties, departments,
+programs, domains, memberships; see
+[`university-management.md`](./university-management.md)). Each is
+self-contained (controller, routes, service, validator, and — for
+`university` — its own middleware) and mounted in
 `server/src/routes/index.js` with a single line, e.g.:
 
 ```js
 router.use('/auth', authRoutes);
+router.use('/universities', universityRoutes);
 ```
 
-None of these domains are implemented in Chunk 01.
+Still unimplemented, reserved for future chunks: `students`, `faculty`,
+`researchers`, `skills`, `interests`, `research`, `projects`,
+`connections`, `mentorship`, `messaging`, `events`, `opportunities`,
+`notifications`.
 
 ## 4. Database Strategy
 
@@ -121,14 +126,19 @@ None of these domains are implemented in Chunk 01.
 - **Models:** `User`, `Role`, `UserRole`, `University`, `Faculty`,
   `Department`, `Program` (Chunk 02 — identity and institution), plus
   `Permission`, `RolePermission`, `RefreshToken`, `EmailVerificationToken`
-  (Chunk 03 — RBAC and auth tokens). See
+  (Chunk 03 — RBAC and auth tokens), plus `UniversityDomain`,
+  `UniversityMembership`, `AuditLog` (Chunk 04 — institutional management,
+  see [`university-management.md`](./university-management.md)). See
   [`database-guidelines.md`](./database-guidelines.md) for naming
   conventions, the primary-key strategy, foreign-key/soft-delete
   behavior, indexing, and multi-tenancy, and
   [`database-erd.md`](./database-erd.md) for the entity-relationship
-  diagram. No migrations exist yet; the RBAC catalog (roles/permissions/
-  role_permissions) is seeded via `database/seed_rbac.sql` — see
-  [`authentication.md`](./authentication.md).
+  diagram. The RBAC catalog (roles/permissions/role_permissions) is
+  seeded via `database/seed_rbac.sql` — see
+  [`authentication.md`](./authentication.md). Chunk 04 introduced the
+  project's first real migration
+  (`database/migrations/001_chunk04_institution_management.sql`) for
+  upgrading an existing database — see `database-guidelines.md` §12.
 - **Configuration:** entirely environment-driven (`DB_HOST`, `DB_PORT`,
   `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_ENCRYPT`, plus optional
   `DB_POOL_MAX`/`DB_POOL_MIN`/`DB_POOL_ACQUIRE`/`DB_POOL_IDLE`). No
@@ -221,7 +231,58 @@ mentorship, events, opportunities, messaging, notifications beyond
 auth-related ones, AI/recommendations, a social feed, file uploads, SSO
 or third-party OAuth providers, and university email-domain enforcement.
 University-scoped authorization (a `UNIVERSITY_ADMIN` restricted to only
-their own university) is designed for but not implemented — see
-[`authentication.md`](./authentication.md) §9, "University-scoped
-authorization (future)" — since the `user ↔ university` relationship it
-would depend on doesn't exist until the University Management chunk.
+their own university) was designed for but not implemented in Chunk 03 —
+it landed in Chunk 04 (§11 below) once the `user ↔ university`
+relationship it depends on existed.
+
+## 11. Chunk 04 — Institutional / University Management
+
+Chunk 04 added the institutional administration domain: university CRUD
+(with a public/admin serialization split), university operational status
+and verification as independent dimensions, an institutional hierarchy
+(faculties → departments → programs, each `paranoid`), verified email
+domains per university, university membership (distinct from the global
+RBAC role system — see below), university administrator assignment, a
+reusable university-scoped authorization service, and an append-only
+audit log. Full design detail lives in
+[`university-management.md`](./university-management.md); summarized
+here:
+
+- **New backend module:** `server/src/modules/university/` (self-
+  contained: controllers, services, validators, routes, middleware for
+  universities, faculties, departments, programs, domains, and
+  memberships), following the same modular-monolith convention as
+  `server/src/modules/auth/`.
+- **Role vs. Membership:** the global RBAC role a user holds
+  (`UNIVERSITY_ADMIN`) is architecturally independent from their
+  institutional *membership* (`university_memberships` — which
+  university, in what capacity, with what status). University-scoped
+  authorization (`assertUniversityAccess`,
+  `server/src/modules/university/access.service.js`) checks both
+  together; role is never used to infer membership.
+- **Multi-tenancy stays shared-database, shared-schema** (see
+  `database-guidelines.md` §9) — Chunk 04 does not introduce per-tenant
+  isolation. University/faculty/department/program reads remain public,
+  preserving cross-university discoverability; only mutations and
+  membership/domain reads are university-scoped.
+- **New tables:** `university_domains`, `university_memberships`,
+  `audit_logs`, plus a new `verification_status` column on `universities`
+  — see `database-guidelines.md` and `database-erd.md`.
+- **First real migration:** `database/migrations/001_chunk04_institution_management.sql`
+  upgrades an existing Chunk 02/03 database; `database/schema.sql`
+  remains the fresh-install source of truth (already includes the Chunk
+  04 tables/columns) — see `database-guidelines.md` §12.
+- **Frontend:** an `/admin` section (`AdminRoute` + `AdminLayout`)
+  covering university list/detail, faculties, departments, programs, and
+  members, plus role-appropriate Super Admin / University Admin
+  dashboards — gated by permission-aware `Can` (a UI convenience, never a
+  security control; the backend independently enforces everything).
+
+### What Chunk 04 Deliberately Does Not Include
+
+Student/faculty/researcher profile detail beyond membership type,
+research, courses, skills, interests, publications, projects, mentorship,
+messaging, events, opportunities, AI/recommendations, a social feed, SSO/
+OAuth, or a mobile app. See
+[`university-management.md`](./university-management.md) §16 for the
+complete list and the reasoning.

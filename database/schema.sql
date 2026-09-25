@@ -3,16 +3,24 @@
 -- Chunk 02: Identity & Institution foundation
 -- Chunk 03: RBAC (permissions, role_permissions) + auth tokens
 --   (refresh_tokens, email_verification_tokens)
+-- Chunk 04: Institutional management (university_domains,
+--   university_memberships, audit_logs) + universities.verification_status
 --
 -- Scope: users, roles, user_roles, universities, faculties, departments,
 -- programs, permissions, role_permissions, refresh_tokens,
--- email_verification_tokens. Nothing beyond this is created here — see
+-- email_verification_tokens, university_domains, university_memberships,
+-- audit_logs. Nothing beyond this is created here — see
 -- docs/database-guidelines.md ("Future schema domains") for what comes next.
 --
--- After running this file, run database/seed_rbac.sql to populate the
--- initial roles/permissions/role_permissions catalog — without it,
--- registration has no STUDENT role to assign and RBAC has nothing to
--- check against.
+-- This file is the current DDL for a FRESH database only. If you already
+-- have a Chunk 02/03 database, this file's CREATE TABLE statements won't
+-- retroactively add the new `universities.verification_status` column —
+-- run database/migrations/001_chunk04_institution_management.sql first.
+--
+-- After running this file (and the migration, if applicable), run
+-- database/seed_rbac.sql to populate the initial
+-- roles/permissions/role_permissions catalog — without it, registration
+-- has no STUDENT role to assign and RBAC has nothing to check against.
 --
 -- This script is the deliberately-controlled alternative to
 -- sequelize.sync({ alter: true }) / sync({ force: true }), which this
@@ -100,35 +108,40 @@ CREATE TABLE IF NOT EXISTS user_roles (
 -- universities — organizational root of the institution hierarchy and
 -- the multi-tenancy boundary (logical, not a separate database — see
 -- docs/database-guidelines.md, "Multi-tenancy strategy"). `email_domain`
--- is a single convenience domain; multi-domain support is a documented
--- future table (university_domains), not built here.
+-- is a single convenience column kept for backward compatibility;
+-- multi-domain support is the dedicated `university_domains` table
+-- (Chunk 04, below). `status` (operational) and `verification_status`
+-- (institutional — Chunk 04) are deliberately independent dimensions —
+-- see docs/university-management.md, "University lifecycle".
 -- -----------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS universities (
-  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  uuid            CHAR(36)     NOT NULL,
-  name            VARCHAR(255) NOT NULL,
-  short_name      VARCHAR(100) NULL,
-  slug            VARCHAR(150) NOT NULL,
-  description     TEXT NULL,
-  logo_url        VARCHAR(500) NULL,
-  website_url     VARCHAR(500) NULL,
-  email_domain    VARCHAR(255) NULL,
-  country         VARCHAR(100) NULL,
-  state_province  VARCHAR(100) NULL,
-  city            VARCHAR(100) NULL,
-  address         VARCHAR(500) NULL,
-  postal_code     VARCHAR(20)  NULL,
-  status          ENUM('PENDING','ACTIVE','SUSPENDED','DEACTIVATED') NOT NULL DEFAULT 'PENDING',
-  verified_at     DATETIME NULL,
-  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  deleted_at      DATETIME NULL,
+  id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  uuid                CHAR(36)     NOT NULL,
+  name                VARCHAR(255) NOT NULL,
+  short_name          VARCHAR(100) NULL,
+  slug                VARCHAR(150) NOT NULL,
+  description         TEXT NULL,
+  logo_url            VARCHAR(500) NULL,
+  website_url         VARCHAR(500) NULL,
+  email_domain        VARCHAR(255) NULL,
+  country             VARCHAR(100) NULL,
+  state_province      VARCHAR(100) NULL,
+  city                VARCHAR(100) NULL,
+  address             VARCHAR(500) NULL,
+  postal_code         VARCHAR(20)  NULL,
+  status              ENUM('PENDING','ACTIVE','SUSPENDED','DEACTIVATED') NOT NULL DEFAULT 'PENDING',
+  verified_at         DATETIME NULL,
+  verification_status ENUM('UNVERIFIED','PENDING','VERIFIED','REJECTED') NOT NULL DEFAULT 'UNVERIFIED',
+  created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted_at          DATETIME NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_universities_uuid (uuid),
   UNIQUE KEY uq_universities_slug (slug),
   KEY ix_universities_status (status),
   KEY ix_universities_country (country),
-  KEY ix_universities_city (city)
+  KEY ix_universities_city (city),
+  KEY ix_universities_verification_status (verification_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------
@@ -297,4 +310,91 @@ CREATE TABLE IF NOT EXISTS email_verification_tokens (
   KEY ix_email_verification_tokens_expires_at (expires_at),
   CONSTRAINT fk_email_verification_tokens_user FOREIGN KEY (user_id) REFERENCES users (id)
     ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------
+-- university_domains — verified email domains for a university (Chunk
+-- 04). Stores bare domains only, never full email addresses.
+-- `domain` is globally unique (see docs/university-management.md).
+-- University deletion never cascades here (RESTRICT), same policy as
+-- faculties/departments/programs.
+-- -----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS university_domains (
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  uuid           CHAR(36)     NOT NULL,
+  university_id  BIGINT UNSIGNED NOT NULL,
+  domain         VARCHAR(255) NOT NULL,
+  is_primary     TINYINT(1)   NOT NULL DEFAULT 0,
+  status         ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'ACTIVE',
+  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted_at     DATETIME NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_university_domains_uuid (uuid),
+  UNIQUE KEY uq_university_domains_domain (domain),
+  KEY ix_university_domains_university_id (university_id),
+  CONSTRAINT fk_university_domains_university FOREIGN KEY (university_id) REFERENCES universities (id)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------
+-- university_memberships — institutional affiliation: which university a
+-- user belongs to and in what capacity (Chunk 04). Deliberately separate
+-- from platform Role — see docs/university-management.md, "Role vs.
+-- membership". `is_primary` "only one per user" is enforced at the
+-- service layer (MySQL has no partial/filtered unique index for it) —
+-- see server/src/modules/university/membership.service.js.
+-- A user's memberships cascade with the user (CASCADE); a university
+-- with active memberships cannot be hard-deleted out from under them
+-- (RESTRICT), matching faculties/departments/programs.
+-- -----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS university_memberships (
+  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  uuid             CHAR(36)     NOT NULL,
+  user_id          BIGINT UNSIGNED NOT NULL,
+  university_id    BIGINT UNSIGNED NOT NULL,
+  membership_type  ENUM('STUDENT','FACULTY','RESEARCHER','STAFF','ADMIN') NOT NULL,
+  status           ENUM('PENDING','ACTIVE','SUSPENDED','ENDED') NOT NULL DEFAULT 'PENDING',
+  is_primary       TINYINT(1) NOT NULL DEFAULT 0,
+  joined_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  left_at          DATETIME NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted_at       DATETIME NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_university_memberships_uuid (uuid),
+  UNIQUE KEY uq_university_memberships_user_university_type (user_id, university_id, membership_type),
+  KEY ix_university_memberships_university_id (university_id),
+  KEY ix_university_memberships_status (status),
+  CONSTRAINT fk_university_memberships_user FOREIGN KEY (user_id) REFERENCES users (id)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT fk_university_memberships_university FOREIGN KEY (university_id) REFERENCES universities (id)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------
+-- audit_logs — append-only institutional audit trail (Chunk 04). No
+-- `uuid` (never addressed by ID from any endpoint), no `deleted_at`
+-- (immutable — never soft-deleted, let alone hard-deleted), no
+-- `updated_at` (an entry is written once and never changed). See
+-- docs/university-management.md, "Audit logging".
+-- -----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  actor_user_id  BIGINT UNSIGNED NULL,
+  action         VARCHAR(100) NOT NULL,
+  entity_type    VARCHAR(50)  NOT NULL,
+  entity_id      BIGINT UNSIGNED NOT NULL,
+  university_id  BIGINT UNSIGNED NULL,
+  metadata       JSON NULL,
+  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_audit_logs_entity (entity_type, entity_id),
+  KEY ix_audit_logs_university_id (university_id),
+  KEY ix_audit_logs_actor_user_id (actor_user_id),
+  KEY ix_audit_logs_created_at (created_at),
+  CONSTRAINT fk_audit_logs_actor FOREIGN KEY (actor_user_id) REFERENCES users (id)
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT fk_audit_logs_university FOREIGN KEY (university_id) REFERENCES universities (id)
+    ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

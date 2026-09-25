@@ -35,8 +35,9 @@ alongside it.
 **Every table uses a `BIGINT UNSIGNED AUTO_INCREMENT` surrogate `id` as
 its primary key.** In addition, entities meant to be referenced from the
 public API (`users`, `universities`, `faculties`, `departments`,
-`programs`) carry a separate `uuid` column (`CHAR(36)`, `UUIDV4`,
-unique, indexed) that the API uses instead of the raw `id`.
+`programs`, plus `university_domains` and `university_memberships` as of
+Chunk 04) carry a separate `uuid` column (`CHAR(36)`, `UUIDV4`, unique,
+indexed) that the API uses instead of the raw `id`.
 
 Why a hybrid instead of picking one:
 
@@ -76,6 +77,9 @@ Why a hybrid instead of picking one:
     token itself, hashed for storage — see "Token Hashing" below); a
     second `uuid` would be redundant, and no endpoint ever addresses one
     of these rows by any id at all.
+  - `audit_logs` (Chunk 04) — never addressed by id from any endpoint; a
+    caller only ever queries it by `entity_type`/`entity_id`,
+    `university_id`, or `actor_user_id`, never by its own row identity.
 
 This is intentionally not a "just use UUIDs everywhere" or "just use
 auto-increment everywhere" decision — it is a per-table rule
@@ -110,6 +114,24 @@ uniformly.
   - `departments.id ← programs.department_id`: **RESTRICT** —
     `department_id` is required on `programs`; a department with
     programs attached cannot be silently removed.
+  - `universities.id ← university_domains.university_id` and
+    `universities.id ← university_memberships.university_id` (Chunk 04):
+    **RESTRICT** — same reasoning as faculties/departments/programs
+    above; a university's registered domains and memberships must not be
+    able to vanish via a careless hard delete of the university row.
+  - `users.id ← university_memberships.user_id` (Chunk 04): **CASCADE** —
+    a per-user artifact like `refresh_tokens`/`user_roles`; if a user row
+    is truly destroyed, their institutional memberships are meaningless
+    and should go with it.
+  - `users.id ← audit_logs.actor_user_id` and
+    `universities.id ← audit_logs.university_id` (Chunk 04): **SET
+    NULL** — `audit_logs` is an append-only historical record; removing
+    the actor or the university it concerns must not delete the audit
+    entry itself, only null out the now-dangling reference. (In practice
+    neither actually happens today, since both `users` and
+    `universities` are soft-deleted, never hard-deleted — this is the
+    defined behavior if a hard delete were ever performed directly
+    against the database.)
 - `ON UPDATE CASCADE` everywhere, since the referenced key is a
   surrogate integer that only changes if a row is genuinely re-keyed
   (which shouldn't happen), and CASCADE-on-update is safe/free in that
@@ -124,12 +146,16 @@ uniformly.
 ## 6. Soft-Delete Strategy
 
 - **Paranoid (`deleted_at`, Sequelize `paranoid: true`):** `users`,
-  `universities`, `faculties`, `departments`, `programs`. These are the
-  entities described in the brief as "major institutional entities" (or,
-  for `users`, an entity whose removal has real downstream consequences —
-  role assignments, future profiles, etc.). Soft-delete is the normal
-  "remove this" path; a real `DELETE` is blocked by RESTRICT wherever it
-  would orphan children (see §5).
+  `universities`, `faculties`, `departments`, `programs`, plus
+  `university_domains` and `university_memberships` (Chunk 04). These are
+  the entities described in the brief as "major institutional entities"
+  (or, for `users`, an entity whose removal has real downstream
+  consequences — role assignments, future profiles, etc.). Soft-delete is
+  the normal "remove this" path; a real `DELETE` is blocked by RESTRICT
+  wherever it would orphan children (see §5). Notably, **there is no hard
+  deletion endpoint anywhere in the Chunk 04 university-management API at
+  all** — a university's terminal state is the `DEACTIVATED` status, not
+  a `DELETE` request (see `university-management.md` §3).
 - **Hard-delete (no `deleted_at`):** `roles`, `user_roles`,
   `permissions`, `role_permissions`. Reference data and pure join rows
   don't carry the same "we might need to restore this" requirement —
@@ -141,20 +167,29 @@ uniformly.
   different from "deleted" — a revoked/used token's history stays
   inspectable (when was it issued, when was it revoked/used) rather than
   disappearing from view the way `deleted_at` would hide it.
+- **Never deleted at all:** `audit_logs` (Chunk 04). Not paranoid, no
+  `deleted_at` column — an audit trail that could itself be deleted (soft
+  or hard) would defeat its purpose. Rows accumulate indefinitely; a
+  future retention/archival job is a separate concern from this chunk.
 
 ## 7. Audit Columns
 
 - **Always:** `created_at`, `updated_at` on every table (Sequelize's
   default timestamps, mapped to snake_case).
-- **`created_by` / `updated_by`: intentionally NOT added in this
-  chunk.** There is no authenticated actor yet — no JWT, no session, no
-  `req.user` — so there is nothing meaningful to populate these with,
-  and a nullable "attribution" column with no writer is worse than no
-  column. These should be added (as nullable `BIGINT UNSIGNED` FKs to
-  `users.id`, `ON DELETE SET NULL`) once the `auth` module exists and a
-  request-scoped actor is available to a shared "audited create/update"
-  helper — at that point add them to whichever tables need change
-  attribution, not automatically to every table.
+- **`created_by` / `updated_by`: still intentionally NOT added to any
+  table, even now that an authenticated actor exists (`req.user`, since
+  Chunk 03).** Chunk 04 needed change attribution for institutional
+  entities and chose a **separate `audit_logs` table**
+  (`actor_user_id`, `action`, `entity_type`, `entity_id`, `university_id`,
+  `metadata` — see `university-management.md` §12) over adding
+  `created_by`/`updated_by` columns directly to `universities`/
+  `faculties`/etc. A dedicated audit table captures a *history* of who
+  changed what and when (every status change, not just the most recent
+  one) rather than only the single most recent actor, and keeps
+  attribution as an additive, optional concern instead of a column on
+  every table that needs it. Per-row `created_by`/`updated_by` columns
+  remain a reasonable alternative for a future table that specifically
+  needs "who currently owns this row" rather than a change history.
 - **`deleted_at`:** see §6 — only on paranoid tables.
 
 ## 8. Indexing Strategy
@@ -165,21 +200,37 @@ column:
 - **Unique lookups:** `users.email`, `users.uuid`, `universities.slug`,
   `universities.uuid`, `faculties.uuid`, `departments.uuid`,
   `programs.uuid`, `roles.name`, `permissions.name`,
-  `refresh_tokens.token_hash`, `email_verification_tokens.token_hash` —
-  each is how that row is looked up by a single value (login by email,
-  entity by public identifier, role/permission by name, a token by its
-  hash).
+  `refresh_tokens.token_hash`, `email_verification_tokens.token_hash`,
+  `university_domains.uuid`, `university_domains.domain` (globally
+  unique — see `university-management.md` §6),
+  `university_memberships.uuid` — each is how that row is looked up by a
+  single value (login by email, entity by public identifier,
+  role/permission by name, a token by its hash, a domain by its
+  hostname).
 - **Foreign keys:** `faculties.university_id`,
   `departments.university_id`, `departments.faculty_id`,
   `programs.university_id`, `programs.department_id`,
   `role_permissions.permission_id`, `refresh_tokens.user_id`,
-  `email_verification_tokens.user_id` — every FK used in a "give me all
-  X for this Y" query (all faculties for a university, all of a user's
-  refresh tokens, ...).
+  `email_verification_tokens.user_id`,
+  `university_domains.university_id`,
+  `university_memberships.university_id`, `audit_logs.university_id`,
+  `audit_logs.actor_user_id` — every FK used in a "give me all X for this
+  Y" query (all faculties for a university, all of a user's refresh
+  tokens, ...).
+- **Composite unique:** `university_memberships (user_id, university_id,
+  membership_type)` — a user can hold at most one membership of a given
+  type at a given university (e.g. one `STUDENT` membership and, later,
+  a separate `ADMIN` membership at the same institution, but never two
+  `STUDENT` rows for the same user/university pair).
 - **Filter columns:** `users.status`, `universities.status`,
-  `universities.country`, `universities.city`, `programs.degree_level` —
+  `universities.country`, `universities.city`, `programs.degree_level`,
+  `universities.verification_status`, `university_memberships.status` —
   fields the brief specifically calls out as filter/search dimensions
-  (e.g. "universities in this country", "bachelor's programs").
+  (e.g. "universities in this country", "bachelor's programs",
+  "pending-verification universities").
+- **Audit queries:** `audit_logs (entity_type, entity_id)` (composite —
+  "show me the history of this specific row") and
+  `audit_logs.created_at` (chronological listing/pruning).
 - **Cleanup queries:** `refresh_tokens.expires_at` and
   `email_verification_tokens.expires_at` — anticipated for a future
   background job (`DELETE ... WHERE expires_at < NOW()`); indexed now
@@ -203,15 +254,26 @@ This is deliberate, not a shortcut: the product's core value is
 discoverable by, and able to connect with, a researcher at University
 B). Per-tenant database isolation would make that a cross-database
 query/federation problem for what should be the platform's single most
-common access pattern. `users` is *not* scoped to a university at all in
-this chunk — a user's university affiliation(s) will be expressed
-through future profile tables (`student_profiles`,
-`faculty_profiles`, ...), keeping identity itself tenant-agnostic.
+common access pattern. `users` is *not* scoped to a university via a
+column on `users` itself — a user's university affiliation(s) are
+expressed through `university_memberships` (Chunk 04, a proper table
+supporting *multiple* affiliations per user, superseding the "future
+profile tables" placeholder this section originally pointed to), keeping
+core identity itself tenant-agnostic while still letting a user belong to
+several institutions.
 
-`university_id` foreign keys on `faculties`, `departments`, and
-`programs` give per-university scoping wherever it's actually needed
-(e.g. "show me this university's departments"), while every table stays
-in the same schema and is trivially joinable across the whole platform.
+`university_id` foreign keys on `faculties`, `departments`, `programs`,
+`university_domains`, and `university_memberships` give per-university
+scoping wherever it's actually needed (e.g. "show me this university's
+departments"), while every table stays in the same schema and is
+trivially joinable across the whole platform. Chunk 04's
+`assertUniversityAccess` service
+(`server/src/modules/university/access.service.js`) is where this logical
+boundary is actually *enforced* for mutating requests — see
+[`university-management.md`](./university-management.md) §8. Reads of
+universities/faculties/departments/programs remain intentionally public
+(no tenant check at all) to preserve cross-university discoverability;
+only mutations and membership/domain reads are university-scoped.
 
 ## 10. Transaction Strategy
 
@@ -281,16 +343,30 @@ this project avoids.
 Instead:
 
 - [`/database/schema.sql`](../database/schema.sql) is the current,
-  hand-written, reviewable DDL for every table this chunk introduces. A
-  developer (or a deploy step) runs it explicitly against a database they
-  control — see [`/database/README.md`](../database/README.md).
+  hand-written, reviewable DDL for every table built so far, kept
+  up to date as the fresh-install source of truth. A developer (or a
+  deploy step) runs it explicitly against a database they control — see
+  [`/database/README.md`](../database/README.md).
 - This is a **development-phase** mechanism, appropriate while the
   schema is still being deliberately designed chunk by chunk. Before
   this project has real production data to protect, it should be
   replaced with a proper migration tool (Sequelize CLI migrations, or
   `umzug`) that tracks applied migrations in a table and supports
-  incremental `ALTER TABLE` changes — a flag for whichever chunk first
-  needs to change a table that already holds data.
+  incremental `ALTER TABLE` changes.
+- **Chunk 04 is the first chunk that actually needed to alter an
+  existing table** (`universities.verification_status`, added to a table
+  that already held Chunk 02/03 data), which is exactly the trigger this
+  section flagged in advance. Rather than adopting a full migration
+  framework for one column, a `database/migrations/` folder was
+  introduced: [`001_chunk04_institution_management.sql`](../database/migrations/001_chunk04_institution_management.sql)
+  contains the `ALTER TABLE` plus the three new `CREATE TABLE IF NOT
+  EXISTS` statements, for upgrading a database that already ran Chunk
+  02/03's `schema.sql`. `schema.sql` itself was also updated in place
+  (its `CREATE TABLE universities` now includes the column directly) so
+  a **fresh** install never needs to run the migration at all — see
+  [`/database/README.md`](../database/README.md) for both paths. This
+  numbered-migrations folder is the natural landing place for the "proper
+  migration tool" called for above, whenever the project adopts one.
 
 ## 13. Backup Considerations
 
@@ -325,9 +401,11 @@ consistent across environments.
 ## 15. Future Schema Domains
 
 Chunk 03 implemented the RBAC domain (`permissions`, `role_permissions`)
-and auth token storage (`refresh_tokens`, `email_verification_tokens`) —
-see [`authentication.md`](./authentication.md) and
-[`database-erd.md`](./database-erd.md). Everything below is still
+and auth token storage (`refresh_tokens`, `email_verification_tokens`);
+Chunk 04 implemented `university_domains`, `university_memberships`, and
+`audit_logs` (see [`authentication.md`](./authentication.md),
+[`university-management.md`](./university-management.md), and
+[`database-erd.md`](./database-erd.md)). Everything below is still
 documented only — **none of these tables exist yet**, and none are
 created as empty placeholders. Each will be designed deliberately in the
 chunk that actually needs it, following the same conventions above.
@@ -342,11 +420,8 @@ chunk that actually needs it, following the same conventions above.
   `messages`, `notifications`
 - **Events:** `events`, `event_registrations`
 - **Opportunities:** `opportunities`, `opportunity_applications`
-- **Administration:** `audit_logs`, `reports`, `moderation_cases`
-- **Institution (deferred sub-domain):** `university_domains` — a
-  future table to support multiple verified email domains per
-  university (see `universities.email_domain` in §4/schema for the
-  current single-domain placeholder column).
+- **Administration:** `reports`, `moderation_cases` (`audit_logs` itself
+  is now implemented — see §6 above and `university-management.md` §12)
 
 ## Testing Against MySQL
 
@@ -380,3 +455,15 @@ structure tests) they need one to run for real. That helper also seeds
 the initial roles/permissions/role_permissions catalog directly (mirroring
 `database/seed_rbac.sql`), so these tests never depend on that script
 having been run separately against the test database.
+
+The Chunk 04 university-management integration tests
+(`server/tests/university/*.test.js`) follow the same pattern, via
+`testDb.js`'s `resetInstitutionTables()` (clears `audit_logs`,
+`university_memberships`, `university_domains`, `programs`,
+`departments`, `faculties`, `universities` in FK-safe order between
+tests) and a dedicated fixture helper,
+`server/tests/helpers/institutionFixtures.js` (`createSuperAdmin`,
+`createUniversity`, `createUniversityAdmin` — the latter creates both the
+`UNIVERSITY_ADMIN` role assignment *and* the matching `ACTIVE` `ADMIN`
+membership together, since `assertUniversityAccess` requires both). Also
+skips gracefully with no database reachable, per the same convention.
