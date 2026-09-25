@@ -1,15 +1,20 @@
 const request = require('supertest');
 const app = require('../src/app');
+const { sequelize } = require('../src/config/database');
+
+afterAll(() => sequelize.close());
 
 describe('GET /api/health', () => {
-  it('returns success status and message', async () => {
+  it('reports API status and a database connectivity indicator', async () => {
+    // No live database is assumed for this test — see
+    // docs/database-guidelines.md for the dedicated MySQL connection
+    // test, which is the one that requires a reachable database.
     const res = await request(app).get('/api/health');
 
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({
-      success: true,
-      message: 'Academic Connect API is running',
-    });
+    expect([200, 503]).toContain(res.statusCode);
+    expect(res.body.api).toBe('ok');
+    expect(['ok', 'error']).toContain(res.body.database);
+    expect(res.body.success).toBe(res.body.database === 'ok');
   });
 });
 

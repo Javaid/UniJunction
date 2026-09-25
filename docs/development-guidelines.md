@@ -26,9 +26,14 @@ sessions picking up where a previous chunk left off.
   agnostic where possible, and are what controllers call.
 - **Validators** use Joi. Validate at the boundary (incoming
   requests) — do not re-validate internal service-to-service calls.
-- **Models** are Sequelize models registered in `server/src/models`.
-  Database access from controllers is not allowed; go through a service
-  (and, once the schema chunk lands, a model).
+- **Models** are Sequelize models, one file per model
+  (`server/src/models/<name>.model.js`, e.g. `user.model.js`), registered
+  and associated in `server/src/models/index.js`. Database access from
+  controllers is not allowed; go through a service, which calls the
+  model. See [`database-guidelines.md`](./database-guidelines.md) for
+  naming conventions, primary-key/foreign-key/soft-delete strategy, and
+  indexing — follow it for every new model rather than improvising a
+  new convention per table.
 - **Errors:** throw `ApiError(statusCode, message)` from
   `server/src/utils/ApiError.js` for any expected failure condition
   (not found, validation failure, unauthorized, etc). Let it propagate to

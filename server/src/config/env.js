@@ -27,6 +27,12 @@ const env = {
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
     encrypt: toBool(process.env.DB_ENCRYPT, false),
+    pool: {
+      max: toInt(process.env.DB_POOL_MAX, 10),
+      min: toInt(process.env.DB_POOL_MIN, 0),
+      acquire: toInt(process.env.DB_POOL_ACQUIRE, 30000),
+      idle: toInt(process.env.DB_POOL_IDLE, 10000),
+    },
   },
 
   jwt: {

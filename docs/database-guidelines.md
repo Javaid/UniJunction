@@ -1,0 +1,312 @@
+# Database Guidelines
+
+Source of truth for how Academic Connect's database is configured,
+structured, and evolved. Read this alongside
+[`architecture.md`](./architecture.md) and
+[`development-guidelines.md`](./development-guidelines.md) before adding
+or changing any schema.
+
+## 1. MySQL Version
+
+**MySQL 8.0+.** Chosen for window functions, CTEs, better JSON support,
+and `utf8mb4` as a sane default — all useful once search/feed-style
+queries and JSON-shaped profile data show up in later chunks. SQL Server
+is not used anywhere in this project.
+
+## 2. Sequelize Version
+
+**Sequelize 6.x** (see `server/package.json`), with `mysql2` as the
+driver — the only ORM used. No second data-access library is introduced
+alongside it.
+
+## 3. Naming Conventions
+
+- **Tables:** `snake_case`, plural (`users`, `universities`,
+  `user_roles`).
+- **Columns:** `snake_case` (`first_name`, `created_at`).
+- Sequelize's global `define: { underscored: true }`
+  (`server/src/config/database.js`) does this translation automatically —
+  models are written in camelCase JS (`firstName`) and Sequelize maps it
+  to `first_name` in SQL. No model should override this per-column.
+- **Enums:** UPPER_SNAKE_CASE values (`ACTIVE`, `SUPER_ADMIN`).
+
+## 4. Primary Key Strategy — Deliberate Decision
+
+**Every table uses a `BIGINT UNSIGNED AUTO_INCREMENT` surrogate `id` as
+its primary key.** In addition, entities meant to be referenced from the
+public API (`users`, `universities`, `faculties`, `departments`,
+`programs`) carry a separate `uuid` column (`CHAR(36)`, `UUIDV4`,
+unique, indexed) that the API uses instead of the raw `id`.
+
+Why a hybrid instead of picking one:
+
+- **Indexing / MySQL performance:** InnoDB clusters a table's data
+  physically around its primary key. A monotonically increasing
+  `BIGINT` keeps inserts sequential (appending to the end of the
+  clustered index) and keeps secondary indexes small, since every
+  secondary index stores a copy of the primary key. A random `UUID` (v4)
+  as the *primary* key causes page splits and index fragmentation at
+  scale — a well-known MySQL/InnoDB anti-pattern.
+- **API exposure:** sequential integer IDs leak information (`/users/5`
+  → "the 5th user ever created") and make enumeration trivial. The
+  `uuid` column gives external consumers an opaque, non-guessable
+  identifier without paying the clustering cost internally — foreign
+  keys and joins still use the fast integer `id`.
+- **Distributed systems / future multi-region:** a plain
+  auto-increment `id` does not survive multi-master or multi-region
+  writes (collisions). The `uuid` column is already collision-safe and
+  globally unique, so if this project ever needs multi-region writes,
+  the externally-facing identifier doesn't change — only the internal
+  `id`'s generation strategy would need to move to something like
+  Snowflake IDs. That migration is isolated to internals; no API
+  contract changes.
+- **Not randomly mixed:** the rule is applied consistently — *every*
+  table gets the surrogate `id`; *only* tables meant for external
+  reference/discovery get a `uuid` on top. Two clear exceptions, both
+  documented at the point of use:
+  - `roles` — a small, closed, admin-controlled reference table. Its
+    sequential id poses no enumeration risk (there's nothing sensitive
+    about knowing "role 3 is FACULTY"), so no `uuid` column.
+  - `user_roles` — a pure join table, never referenced by ID from a URL
+    or API payload, so no `uuid` column.
+
+This is intentionally not a "just use UUIDs everywhere" or "just use
+auto-increment everywhere" decision — it is a per-table rule
+(surrogate id always; uuid when externally addressable) applied
+uniformly.
+
+## 5. Foreign Key Strategy
+
+- Every FK column is `BIGINT UNSIGNED`, matching the referenced `id`.
+- **`ON DELETE` is chosen per relationship, never defaulted to CASCADE:**
+  - `users.id ← user_roles.user_id`: **CASCADE** — a pure relational
+    join; if a user row is truly destroyed, its role assignments should
+    go with it.
+  - `roles.id ← user_roles.role_id`: **CASCADE** — same reasoning.
+  - `universities.id ← faculties/departments/programs.university_id`:
+    **RESTRICT** — a university must never be able to take its entire
+    academic hierarchy down with it via a careless hard delete. Removing
+    a university is expected to go through soft-delete (see §6), not a
+    real `DELETE`.
+  - `faculties.id ← departments/programs.faculty_id`: **SET NULL** —
+    `faculty_id` is already optional on both tables (see §7), so losing
+    the faculty just clears the reference instead of blocking or
+    cascading.
+  - `departments.id ← programs.department_id`: **RESTRICT** —
+    `department_id` is required on `programs`; a department with
+    programs attached cannot be silently removed.
+- `ON UPDATE CASCADE` everywhere, since the referenced key is a
+  surrogate integer that only changes if a row is genuinely re-keyed
+  (which shouldn't happen), and CASCADE-on-update is safe/free in that
+  case.
+- Cross-row invariants a single FK cannot express — e.g. "if
+  `departments.faculty_id` is set, that faculty must belong to the same
+  `departments.university_id`" — are **service-layer validation**, not a
+  DB constraint or a Sequelize model hook. No CRUD API exists yet for
+  these tables (out of scope for this chunk), so this is documented here
+  for whoever builds that service.
+
+## 6. Soft-Delete Strategy
+
+- **Paranoid (`deleted_at`, Sequelize `paranoid: true`):** `users`,
+  `universities`, `faculties`, `departments`, `programs`. These are the
+  entities described in the brief as "major institutional entities" (or,
+  for `users`, an entity whose removal has real downstream consequences —
+  role assignments, future profiles, etc.). Soft-delete is the normal
+  "remove this" path; a real `DELETE` is blocked by RESTRICT wherever it
+  would orphan children (see §5).
+- **Hard-delete (no `deleted_at`):** `roles`, `user_roles`. Reference
+  data and pure join rows don't carry the same "we might need to restore
+  this" requirement — removing a role assignment is just removing a
+  fact, not retiring an entity.
+
+## 7. Audit Columns
+
+- **Always:** `created_at`, `updated_at` on every table (Sequelize's
+  default timestamps, mapped to snake_case).
+- **`created_by` / `updated_by`: intentionally NOT added in this
+  chunk.** There is no authenticated actor yet — no JWT, no session, no
+  `req.user` — so there is nothing meaningful to populate these with,
+  and a nullable "attribution" column with no writer is worse than no
+  column. These should be added (as nullable `BIGINT UNSIGNED` FKs to
+  `users.id`, `ON DELETE SET NULL`) once the `auth` module exists and a
+  request-scoped actor is available to a shared "audited create/update"
+  helper — at that point add them to whichever tables need change
+  attribution, not automatically to every table.
+- **`deleted_at`:** see §6 — only on paranoid tables.
+
+## 8. Indexing Strategy
+
+Indexes are added for known access patterns, not by default on every
+column:
+
+- **Unique lookups:** `users.email`, `users.uuid`, `universities.slug`,
+  `universities.uuid`, `faculties.uuid`, `departments.uuid`,
+  `programs.uuid`, `roles.name` — each is how that row is looked up by a
+  single value (login by email, entity by public identifier, role by
+  name).
+- **Foreign keys:** `faculties.university_id`,
+  `departments.university_id`, `departments.faculty_id`,
+  `programs.university_id`, `programs.department_id` — every FK used in
+  a "give me all X for this Y" query (all faculties for a university,
+  all programs in a department, ...).
+- **Filter columns:** `users.status`, `universities.status`,
+  `universities.country`, `universities.city`, `programs.degree_level` —
+  fields the brief specifically calls out as filter/search dimensions
+  (e.g. "universities in this country", "bachelor's programs").
+- **Not indexed:** free-text fields (`description`), rarely-filtered
+  optional contact fields (`phone`, `website_url`), and anything without
+  a concrete query driving it. An index that isn't used still costs
+  writes and storage — it is added when a query needs it, not
+  preemptively.
+
+## 9. Multi-Tenancy Strategy
+
+Academic Connect is **shared-database, shared-schema** multi-tenancy: one
+MySQL database, one set of tables, with `university_id` as a logical
+tenant boundary on the institution hierarchy — not physically isolated
+per-university databases or schemas.
+
+This is deliberate, not a shortcut: the product's core value is
+**cross-university discovery** (a student at University A must be
+discoverable by, and able to connect with, a researcher at University
+B). Per-tenant database isolation would make that a cross-database
+query/federation problem for what should be the platform's single most
+common access pattern. `users` is *not* scoped to a university at all in
+this chunk — a user's university affiliation(s) will be expressed
+through future profile tables (`student_profiles`,
+`faculty_profiles`, ...), keeping identity itself tenant-agnostic.
+
+`university_id` foreign keys on `faculties`, `departments`, and
+`programs` give per-university scoping wherever it's actually needed
+(e.g. "show me this university's departments"), while every table stays
+in the same schema and is trivially joinable across the whole platform.
+
+## 10. Transaction Strategy
+
+No multi-statement write flows exist yet in this chunk (no CRUD APIs are
+implemented — see scope note below). The standing rule for when they
+land: any service-layer operation that writes to more than one table
+(e.g. creating a user and their initial role assignment together) must
+wrap those writes in a single Sequelize `sequelize.transaction()`, so a
+failure partway through leaves no orphaned rows. Read-only endpoints
+don't need one.
+
+## 11. Database Security
+
+- `password_hash` is excluded from `User`'s default Sequelize scope
+  (`server/src/models/user.model.js`), so it can never leak through an
+  accidental `res.json(user)`. Code that genuinely needs it (the future
+  auth module, for comparing a login attempt) must opt in explicitly via
+  `User.unscoped()`.
+- Database credentials live only in environment variables
+  (`server/src/config/env.js`); nothing reads `process.env` directly
+  outside that file, and no credential is ever logged (the connection
+  log line prints host/port/database name, never the password).
+- The health endpoint (`/api/health`) never surfaces the underlying
+  connection error — `isDatabaseHealthy()`
+  (`server/src/config/database.js`) catches it, logs a message server-side,
+  and returns a plain boolean to the caller.
+- All queries go through Sequelize's parameterized query builder — no
+  raw string-concatenated SQL exists anywhere in this codebase, which is
+  the primary SQL-injection defense.
+- `DB_ENCRYPT=true` enables TLS (`ssl: { require: true, rejectUnauthorized:
+  true }`) for the MySQL connection, for environments (e.g. managed cloud
+  MySQL) that require it.
+
+## 12. Production Migration Strategy
+
+**Sequelize's `sync()` (`force` or `alter`) is never called anywhere in
+this codebase**, in any environment. Automatic sync would let application
+startup silently reshape (or destroy) a production schema — exactly what
+this project avoids.
+
+Instead:
+
+- [`/database/schema.sql`](../database/schema.sql) is the current,
+  hand-written, reviewable DDL for every table this chunk introduces. A
+  developer (or a deploy step) runs it explicitly against a database they
+  control — see [`/database/README.md`](../database/README.md).
+- This is a **development-phase** mechanism, appropriate while the
+  schema is still being deliberately designed chunk by chunk. Before
+  this project has real production data to protect, it should be
+  replaced with a proper migration tool (Sequelize CLI migrations, or
+  `umzug`) that tracks applied migrations in a table and supports
+  incremental `ALTER TABLE` changes — a flag for whichever chunk first
+  needs to change a table that already holds data.
+
+## 13. Backup Considerations
+
+Not implemented in this chunk (no production deployment exists yet).
+For when it does: MySQL 8 native logical backups (`mysqldump` /
+`mysqlpump`) or a managed provider's automated snapshot feature are both
+reasonable starting points; whichever is chosen should be verified with
+an actual restore drill, not just "the backup file exists." Point-in-time
+recovery (binlog-based) becomes worth setting up once the platform holds
+data users would notice losing.
+
+## 14. Connection Pooling
+
+Configured in `server/src/config/database.js` via Sequelize's `pool`
+option, sourced from environment variables (all optional, with sensible
+defaults):
+
+| Variable          | Default | Meaning                                   |
+|-------------------|---------|--------------------------------------------|
+| `DB_POOL_MAX`     | 10      | Max simultaneous connections                |
+| `DB_POOL_MIN`     | 0       | Min connections kept open when idle         |
+| `DB_POOL_ACQUIRE` | 30000ms | Max time to wait for a connection           |
+| `DB_POOL_IDLE`    | 10000ms | Max time a connection can sit idle          |
+
+A fixed `connectTimeout: 10000` (ms) is also set on the underlying
+`mysql2` connection so a completely unreachable host fails fast instead
+of hanging. Timestamps are read/written in UTC
+(`timezone: '+00:00'`) regardless of the host machine's or MySQL
+server's local timezone, so `created_at`/`updated_at` values are
+consistent across environments.
+
+## 15. Future Schema Domains
+
+Documented here only — **none of these tables exist yet**, and none are
+created as empty placeholders. Each will be designed deliberately in the
+chunk that actually needs it, following the same conventions above.
+
+- **Academic:** `students` (student profile), `faculty_profiles`,
+  `researchers`, `courses`, `skills`, `interests`, `research_areas`,
+  `publications`
+- **Network:** `connections`, `connection_requests`, `follows`, `blocks`
+- **Collaboration:** `projects`, `project_members`, `research_projects`,
+  `research_applications`, `mentorships`
+- **Communication:** `conversations`, `conversation_members`,
+  `messages`, `notifications`
+- **Events:** `events`, `event_registrations`
+- **Opportunities:** `opportunities`, `opportunity_applications`
+- **Administration:** `audit_logs`, `reports`, `moderation_cases`
+- **Institution (deferred sub-domain):** `university_domains` — a
+  future table to support multiple verified email domains per
+  university (see `universities.email_domain` in §4/schema for the
+  current single-domain placeholder column).
+
+## Testing Against MySQL
+
+Unit tests for model structure and associations
+(`server/tests/models/*.test.js`) never require a live database — they
+inspect `rawAttributes`/`associations` on models constructed in memory.
+
+`server/tests/database.connection.test.js` is the one test that touches
+a real server: it attempts `sequelize.authenticate()` and, if no
+database is reachable, logs a warning and passes trivially rather than
+failing the whole suite. To exercise that assertion for real, point the
+usual `DB_*` variables at a disposable database (never your production
+one), e.g.:
+
+```
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_NAME=academic_connect_test
+DB_USER=ac_app
+DB_PASSWORD=<local-dev-password>
+```
+
+Apply `database/schema.sql` to that test database the same way as any
+other before running `npm test` against it.

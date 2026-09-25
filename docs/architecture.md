@@ -107,18 +107,34 @@ None of these domains are implemented in Chunk 01.
 
 ## 4. Database Strategy
 
-- **Engine:** MySQL.
-- **ORM:** Sequelize, connected via `server/src/config/database.js`.
-- **No migrations or seeders in this chunk.** The connection is
-  established and verified on startup (`connectDatabase`), but no models,
-  migrations, or seed data exist yet — the schema will be designed
-  deliberately in a later chunk once the domain model is finalized.
+- **Engine:** MySQL 8.x, via the `mysql2` driver.
+- **ORM:** Sequelize, connected via `server/src/config/database.js`
+  (connection pooling, UTC timestamps, a fixed connect timeout — see
+  [`database-guidelines.md`](./database-guidelines.md) for the full
+  configuration).
+- **Schema is never managed by application code.** `sequelize.sync()` is
+  not called anywhere, in any environment. The schema is created via the
+  hand-written, reviewable [`/database/schema.sql`](../database/schema.sql)
+  — see [`database-guidelines.md`](./database-guidelines.md#12-production-migration-strategy)
+  for why, and [`/database/README.md`](../database/README.md) for how to
+  run it.
+- **Models (as of Chunk 02):** `User`, `Role`, `UserRole`, `University`,
+  `Faculty`, `Department`, `Program` — the identity and institution
+  foundation. See [`database-guidelines.md`](./database-guidelines.md)
+  for naming conventions, the primary-key strategy, foreign-key/soft-delete
+  behavior, indexing, and multi-tenancy, and
+  [`database-erd.md`](./database-erd.md) for the entity-relationship
+  diagram. No migrations or seeders exist yet — role rows and any other
+  seed data are deferred to the chunk that needs them.
 - **Configuration:** entirely environment-driven (`DB_HOST`, `DB_PORT`,
-  `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_ENCRYPT`). No credentials are
-  ever hard-coded.
+  `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_ENCRYPT`, plus optional
+  `DB_POOL_MAX`/`DB_POOL_MIN`/`DB_POOL_ACQUIRE`/`DB_POOL_IDLE`). No
+  credentials are ever hard-coded.
 - **Startup behavior:** if the database is unreachable, the server logs
   the failure and exits non-zero rather than starting in a broken state
-  (graceful startup failure).
+  (graceful startup failure). At runtime, `GET /api/health` reports live
+  database connectivity (`{ success, api, database }`, HTTP 503 when the
+  database is down) without ever exposing connection details.
 
 ## 5. Authentication Strategy (Placeholder)
 
@@ -167,3 +183,12 @@ logic, user/student/faculty/university management, research or project
 domains, messaging, events, opportunities, database migrations/seeders,
 or any recommendation/social features. This document will be extended,
 not replaced, as those chunks land.
+
+## 9. What Chunk 02 Deliberately Does Not Include
+
+Chunk 02 established the identity/institution schema and models only —
+no CRUD APIs were added for any of the new tables, no authentication
+(login/registration/JWT) was implemented, and no profile, research,
+project, messaging, event, or opportunity domains exist. See
+[`database-guidelines.md`](./database-guidelines.md) §15 for the full
+list of documented-but-not-built future schema domains.
