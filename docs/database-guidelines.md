@@ -64,11 +64,18 @@ Why a hybrid instead of picking one:
   table gets the surrogate `id`; *only* tables meant for external
   reference/discovery get a `uuid` on top. Two clear exceptions, both
   documented at the point of use:
-  - `roles` — a small, closed, admin-controlled reference table. Its
-    sequential id poses no enumeration risk (there's nothing sensitive
-    about knowing "role 3 is FACULTY"), so no `uuid` column.
-  - `user_roles` — a pure join table, never referenced by ID from a URL
-    or API payload, so no `uuid` column.
+  - `roles`, `permissions` — small, closed, admin-controlled reference
+    tables. Their sequential ids pose no enumeration risk (there's
+    nothing sensitive about knowing "role 3 is FACULTY"), so no `uuid`
+    column. Role assignment/removal endpoints address a role by its
+    `name`, not a generated id.
+  - `user_roles`, `role_permissions` — pure join tables, never
+    referenced by ID from a URL or API payload, so no `uuid` column.
+  - `refresh_tokens`, `email_verification_tokens` — internal security
+    artifacts with their own opaque, high-entropy identifier (the raw
+    token itself, hashed for storage — see "Token Hashing" below); a
+    second `uuid` would be redundant, and no endpoint ever addresses one
+    of these rows by any id at all.
 
 This is intentionally not a "just use UUIDs everywhere" or "just use
 auto-increment everywhere" decision — it is a per-table rule
@@ -83,6 +90,14 @@ uniformly.
     join; if a user row is truly destroyed, its role assignments should
     go with it.
   - `roles.id ← user_roles.role_id`: **CASCADE** — same reasoning.
+  - `roles.id ← role_permissions.role_id` and
+    `permissions.id ← role_permissions.permission_id`: **CASCADE** — same
+    reasoning; `role_permissions` is a pure join table like `user_roles`.
+  - `users.id ← refresh_tokens.user_id` and
+    `users.id ← email_verification_tokens.user_id`: **CASCADE** — these
+    are per-user security artifacts, not institutional entities; if a
+    user row is truly destroyed, its tokens are meaningless and should
+    go with it.
   - `universities.id ← faculties/departments/programs.university_id`:
     **RESTRICT** — a university must never be able to take its entire
     academic hierarchy down with it via a careless hard delete. Removing
@@ -115,10 +130,17 @@ uniformly.
   role assignments, future profiles, etc.). Soft-delete is the normal
   "remove this" path; a real `DELETE` is blocked by RESTRICT wherever it
   would orphan children (see §5).
-- **Hard-delete (no `deleted_at`):** `roles`, `user_roles`. Reference
-  data and pure join rows don't carry the same "we might need to restore
-  this" requirement — removing a role assignment is just removing a
-  fact, not retiring an entity.
+- **Hard-delete (no `deleted_at`):** `roles`, `user_roles`,
+  `permissions`, `role_permissions`. Reference data and pure join rows
+  don't carry the same "we might need to restore this" requirement —
+  removing a role assignment is just removing a fact, not retiring an
+  entity.
+- **State tracked by a dedicated column, not soft-delete:**
+  `refresh_tokens` (`revoked_at`) and `email_verification_tokens`
+  (`used_at`). A token's "no longer valid" state is meaningfully
+  different from "deleted" — a revoked/used token's history stays
+  inspectable (when was it issued, when was it revoked/used) rather than
+  disappearing from view the way `deleted_at` would hide it.
 
 ## 7. Audit Columns
 
@@ -142,18 +164,27 @@ column:
 
 - **Unique lookups:** `users.email`, `users.uuid`, `universities.slug`,
   `universities.uuid`, `faculties.uuid`, `departments.uuid`,
-  `programs.uuid`, `roles.name` — each is how that row is looked up by a
-  single value (login by email, entity by public identifier, role by
-  name).
+  `programs.uuid`, `roles.name`, `permissions.name`,
+  `refresh_tokens.token_hash`, `email_verification_tokens.token_hash` —
+  each is how that row is looked up by a single value (login by email,
+  entity by public identifier, role/permission by name, a token by its
+  hash).
 - **Foreign keys:** `faculties.university_id`,
   `departments.university_id`, `departments.faculty_id`,
-  `programs.university_id`, `programs.department_id` — every FK used in
-  a "give me all X for this Y" query (all faculties for a university,
-  all programs in a department, ...).
+  `programs.university_id`, `programs.department_id`,
+  `role_permissions.permission_id`, `refresh_tokens.user_id`,
+  `email_verification_tokens.user_id` — every FK used in a "give me all
+  X for this Y" query (all faculties for a university, all of a user's
+  refresh tokens, ...).
 - **Filter columns:** `users.status`, `universities.status`,
   `universities.country`, `universities.city`, `programs.degree_level` —
   fields the brief specifically calls out as filter/search dimensions
   (e.g. "universities in this country", "bachelor's programs").
+- **Cleanup queries:** `refresh_tokens.expires_at` and
+  `email_verification_tokens.expires_at` — anticipated for a future
+  background job (`DELETE ... WHERE expires_at < NOW()`); indexed now
+  since that access pattern is already designed for, even though the job
+  itself isn't built in this chunk.
 - **Not indexed:** free-text fields (`description`), rarely-filtered
   optional contact fields (`phone`, `website_url`), and anything without
   a concrete query driving it. An index that isn't used still costs
@@ -214,6 +245,32 @@ don't need one.
   true }`) for the MySQL connection, for environments (e.g. managed cloud
   MySQL) that require it.
 
+### Token Hashing: SHA-256, Not bcrypt
+
+`refresh_tokens.token_hash` and `email_verification_tokens.token_hash`
+store a SHA-256 hex digest, not a bcrypt hash — a deliberate,
+different choice from `users.password_hash`, for two reasons:
+
+1. **Lookup requirement.** A refresh/verification token is validated by
+   an exact-match database query (`WHERE token_hash = ?`). bcrypt
+   generates a random salt per call, so hashing the same input twice
+   produces two different outputs — it is architecturally incapable of
+   being looked up by equality. SHA-256 is deterministic, so the same
+   raw token always hashes to the same value.
+2. **Threat model.** bcrypt's slow, salted design defends against
+   offline brute-forcing of a *low-entropy, human-chosen* secret (a
+   password). These tokens are the opposite: 256 bits of
+   `crypto.randomBytes` server-generated randomness. Brute-forcing a
+   256-bit random value is infeasible regardless of hash speed, so
+   bcrypt's slowness buys nothing here — it would only add unnecessary
+   CPU cost to every login/refresh/verify request.
+
+Both columns are also excluded from their models' default Sequelize
+scope, as defense-in-depth (see `server/src/models/refresh-token.model.js`
+and `email-verification-token.model.js`) — no endpoint ever returns one
+of these rows at all, but an accidental future `res.json()` of one still
+couldn't leak the hash.
+
 ## 12. Production Migration Strategy
 
 **Sequelize's `sync()` (`force` or `alter`) is never called anywhere in
@@ -267,7 +324,11 @@ consistent across environments.
 
 ## 15. Future Schema Domains
 
-Documented here only — **none of these tables exist yet**, and none are
+Chunk 03 implemented the RBAC domain (`permissions`, `role_permissions`)
+and auth token storage (`refresh_tokens`, `email_verification_tokens`) —
+see [`authentication.md`](./authentication.md) and
+[`database-erd.md`](./database-erd.md). Everything below is still
+documented only — **none of these tables exist yet**, and none are
 created as empty placeholders. Each will be designed deliberately in the
 chunk that actually needs it, following the same conventions above.
 
@@ -310,3 +371,12 @@ DB_PASSWORD=<local-dev-password>
 
 Apply `database/schema.sql` to that test database the same way as any
 other before running `npm test` against it.
+
+The Chunk 03 auth integration tests (`server/tests/auth/*.test.js`)
+follow the same graceful-skip pattern via a shared helper
+(`server/tests/helpers/testDb.js`) — they register real users, log in,
+and exercise real tokens against the database, so (unlike the model
+structure tests) they need one to run for real. That helper also seeds
+the initial roles/permissions/role_permissions catalog directly (mirroring
+`database/seed_rbac.sql`), so these tests never depend on that script
+having been run separately against the test database.

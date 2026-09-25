@@ -46,6 +46,16 @@ sessions picking up where a previous chunk left off.
 - **New route checklist:** add a validator (if it takes input), a service
   function, a controller function, register the route in the domain's
   `*.routes.js`, and mount that router in `server/src/routes/index.js`.
+- **Request validation:** use the shared `server/src/middleware/validate.js`
+  (`validate(schema)` / `validate(schema, 'query')`) with a Joi schema —
+  don't hand-roll validation in a controller.
+- **Protecting a route:** `requireAuth` (`modules/auth/auth.middleware.js`)
+  authenticates; `requireRole`/`requireAnyRole`/`requirePermission`/
+  `requireAnyPermission` (`modules/auth/rbac.middleware.js`) authorize,
+  and must run after `requireAuth`. See
+  [`authentication.md`](./authentication.md) for the full RBAC model —
+  add new permissions to the initial set there and to
+  `database/seed_rbac.sql` deliberately, not ad hoc in a controller.
 
 ## Frontend Conventions
 

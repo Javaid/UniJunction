@@ -15,5 +15,11 @@
   "rules": {
     "react/react-in-jsx-scope": "off",
     "no-unused-vars": ["warn", { "args": "none" }]
-  }
+  },
+  "overrides": [
+    {
+      "files": ["src/test/**/*.{js,jsx}"],
+      "env": { "jest": true }
+    }
+  ]
 }

@@ -118,14 +118,17 @@ None of these domains are implemented in Chunk 01.
   — see [`database-guidelines.md`](./database-guidelines.md#12-production-migration-strategy)
   for why, and [`/database/README.md`](../database/README.md) for how to
   run it.
-- **Models (as of Chunk 02):** `User`, `Role`, `UserRole`, `University`,
-  `Faculty`, `Department`, `Program` — the identity and institution
-  foundation. See [`database-guidelines.md`](./database-guidelines.md)
-  for naming conventions, the primary-key strategy, foreign-key/soft-delete
+- **Models:** `User`, `Role`, `UserRole`, `University`, `Faculty`,
+  `Department`, `Program` (Chunk 02 — identity and institution), plus
+  `Permission`, `RolePermission`, `RefreshToken`, `EmailVerificationToken`
+  (Chunk 03 — RBAC and auth tokens). See
+  [`database-guidelines.md`](./database-guidelines.md) for naming
+  conventions, the primary-key strategy, foreign-key/soft-delete
   behavior, indexing, and multi-tenancy, and
   [`database-erd.md`](./database-erd.md) for the entity-relationship
-  diagram. No migrations or seeders exist yet — role rows and any other
-  seed data are deferred to the chunk that needs them.
+  diagram. No migrations exist yet; the RBAC catalog (roles/permissions/
+  role_permissions) is seeded via `database/seed_rbac.sql` — see
+  [`authentication.md`](./authentication.md).
 - **Configuration:** entirely environment-driven (`DB_HOST`, `DB_PORT`,
   `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_ENCRYPT`, plus optional
   `DB_POOL_MAX`/`DB_POOL_MIN`/`DB_POOL_ACQUIRE`/`DB_POOL_IDLE`). No
@@ -136,21 +139,39 @@ None of these domains are implemented in Chunk 01.
   database connectivity (`{ success, api, database }`, HTTP 503 when the
   database is down) without ever exposing connection details.
 
-## 5. Authentication Strategy (Placeholder)
+## 5. Authentication & Authorization Strategy
 
-Authentication is **not implemented** in this chunk. The foundation for it
-is already in place so the `auth` module can be built directly on top of
-it in a later chunk:
+Implemented in Chunk 03 — full detail lives in
+[`authentication.md`](./authentication.md); summarized here:
 
-- `JWT_SECRET` / `JWT_EXPIRES_IN` environment variables are defined.
-- `jsonwebtoken` and `bcryptjs` are installed as dependencies.
-- The frontend has placeholder `/login` and `/register` pages with no
-  wired-up logic.
-
-The intended future shape (not built yet): a `modules/auth` domain
-issuing JWTs on login, an Express middleware that verifies the token and
-attaches the authenticated user to `req.user`, and protected routes that
-use that middleware.
+- **Stateless JWT access tokens** (`server/src/modules/auth/token.service.js`),
+  short-lived (`JWT_ACCESS_EXPIRES_IN`, default 15m), minimal claims
+  (`sub`, `jti`, `type`, `iat`, `exp`) — no roles, permissions, or profile
+  data embedded.
+- **Revocable, DB-backed refresh tokens** (`refresh_tokens` table, opaque
+  random value, SHA-256-hashed for storage), supporting rotation on every
+  use and immediate revocation on logout.
+- **`requireAuth` middleware** (`auth.middleware.js`) resolves the
+  authenticated user (with roles/permissions eager-loaded) onto
+  `req.user` for every protected route, re-checking account status on
+  every request rather than trusting the token's age.
+- **RBAC**: `requireRole`/`requireAnyRole`/`requirePermission`/
+  `requireAnyPermission` (`rbac.middleware.js`), backed by
+  `roles ↔ permissions` through `role_permissions`. 401 (unauthenticated)
+  and 403 (authenticated, unauthorized) are kept strictly distinct.
+- **Endpoints:** `/api/auth/{register,login,verify-email,
+  resend-verification,refresh,logout,me}` and the admin-only
+  `/api/admin/users` (+ role assignment) endpoints — see
+  `authentication.md` for the full contract, security model, and one
+  explicitly-documented known limitation (`USER_VIEW` vs. the admin
+  listing endpoint).
+- **Frontend:** `authSlice` (Redux Toolkit) holds `user`/`accessToken`/
+  `isAuthenticated` in memory only; the refresh token lives in a small
+  standalone module (`services/tokenStore.js`), also memory-only —
+  neither survives a page reload, a documented tradeoff (see
+  `authentication.md` §13). `ProtectedRoute` gates `/dashboard`;
+  `apiClient.js`'s interceptors attach the access token and perform a
+  single silent-refresh-and-retry on a 401.
 
 ## 6. Environment Configuration
 
@@ -192,3 +213,15 @@ no CRUD APIs were added for any of the new tables, no authentication
 project, messaging, event, or opportunity domains exist. See
 [`database-guidelines.md`](./database-guidelines.md) §15 for the full
 list of documented-but-not-built future schema domains.
+
+## 10. What Chunk 03 Deliberately Does Not Include
+
+University CRUD, student/faculty profile management, research, projects,
+mentorship, events, opportunities, messaging, notifications beyond
+auth-related ones, AI/recommendations, a social feed, file uploads, SSO
+or third-party OAuth providers, and university email-domain enforcement.
+University-scoped authorization (a `UNIVERSITY_ADMIN` restricted to only
+their own university) is designed for but not implemented — see
+[`authentication.md`](./authentication.md) §9, "University-scoped
+authorization (future)" — since the `user ↔ university` relationship it
+would depend on doesn't exist until the University Management chunk.

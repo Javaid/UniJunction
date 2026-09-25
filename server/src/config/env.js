@@ -36,8 +36,27 @@ const env = {
   },
 
   jwt: {
-    secret: process.env.JWT_SECRET || '',
-    expiresIn: process.env.JWT_EXPIRES_IN || '1d',
+    // Access tokens are short-lived and stateless (verified by signature
+    // alone). Refresh tokens are opaque, DB-backed, and revocable — they
+    // have no secret of their own, only a configurable lifetime. See
+    // docs/authentication.md.
+    accessSecret: process.env.JWT_ACCESS_SECRET || '',
+    accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '15m',
+    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
+  },
+
+  security: {
+    bcryptSaltRounds: toInt(process.env.BCRYPT_SALT_ROUNDS, 12),
+  },
+
+  emailVerification: {
+    expiresInHours: toInt(process.env.EMAIL_VERIFICATION_EXPIRES_IN_HOURS, 24),
+    resendCooldownSeconds: toInt(process.env.EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS, 60),
+  },
+
+  rateLimit: {
+    authWindowMs: toInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+    authMax: toInt(process.env.AUTH_RATE_LIMIT_MAX, 20),
   },
 
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:5173',

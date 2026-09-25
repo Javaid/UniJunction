@@ -1,13 +1,18 @@
-# Database ERD — Chunk 02 (Identity & Institution)
+# Database ERD — Chunks 02–03 (Identity, Institution, RBAC & Auth Tokens)
 
 This diagram covers only the tables implemented so far. See
 [`database-guidelines.md`](./database-guidelines.md) for the domains
-planned for later chunks.
+planned for later chunks, and [`authentication.md`](./authentication.md)
+for how the RBAC and token tables are used.
 
 ```mermaid
 erDiagram
     USERS ||--o{ USER_ROLES : "has"
     ROLES ||--o{ USER_ROLES : "assigned via"
+    ROLES ||--o{ ROLE_PERMISSIONS : "granted via"
+    PERMISSIONS ||--o{ ROLE_PERMISSIONS : "granted via"
+    USERS ||--o{ REFRESH_TOKENS : "issues"
+    USERS ||--o{ EMAIL_VERIFICATION_TOKENS : "issues"
 
     UNIVERSITIES ||--o{ FACULTIES : "has"
     UNIVERSITIES ||--o{ DEPARTMENTS : "has"
@@ -46,6 +51,43 @@ erDiagram
         bigint id PK
         bigint user_id FK
         bigint role_id FK
+        datetime created_at
+        datetime updated_at
+    }
+
+    PERMISSIONS {
+        bigint id PK
+        varchar_50 name UK
+        varchar_255 description
+        datetime created_at
+        datetime updated_at
+    }
+
+    ROLE_PERMISSIONS {
+        bigint id PK
+        bigint role_id FK
+        bigint permission_id FK
+        datetime created_at
+        datetime updated_at
+    }
+
+    REFRESH_TOKENS {
+        bigint id PK
+        bigint user_id FK
+        char_64 token_hash UK
+        datetime expires_at
+        datetime revoked_at
+        datetime last_used_at
+        datetime created_at
+        datetime updated_at
+    }
+
+    EMAIL_VERIFICATION_TOKENS {
+        bigint id PK
+        bigint user_id FK
+        char_64 token_hash UK
+        datetime expires_at
+        datetime used_at
         datetime created_at
         datetime updated_at
     }
@@ -121,6 +163,17 @@ erDiagram
 
 - `USERS ↔ ROLES` is many-to-many through `USER_ROLES` — a user can hold
   several roles (e.g. `FACULTY` and `UNIVERSITY_ADMIN`) at once.
+- `ROLES ↔ PERMISSIONS` is many-to-many through `ROLE_PERMISSIONS` — the
+  RBAC layer. A user's effective permissions are the union of every
+  permission granted to every role they hold (see
+  [`authentication.md`](./authentication.md) §9).
+- `USERS → REFRESH_TOKENS` and `USERS → EMAIL_VERIFICATION_TOKENS` are
+  one-to-many: a user accumulates a history of issued tokens over time
+  (refresh tokens rotate on use — see `authentication.md` §6 — and each
+  rotation is a new row, with the old one marked `revoked_at`). Both
+  tables store only a SHA-256 hash of the actual token, never the raw
+  value (`authentication.md` §6, `database-guidelines.md` "Token
+  Hashing").
 - `UNIVERSITIES` is the root of the institution hierarchy. `FACULTIES`
   and `DEPARTMENTS` both carry a direct `university_id`, not just a
   transitive one through each other — this is deliberate, since

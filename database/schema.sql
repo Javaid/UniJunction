@@ -1,9 +1,18 @@
 -- =============================================================================
--- Academic Connect — Core Schema (Chunk 02: Identity & Institution foundation)
+-- Academic Connect — Core Schema
+-- Chunk 02: Identity & Institution foundation
+-- Chunk 03: RBAC (permissions, role_permissions) + auth tokens
+--   (refresh_tokens, email_verification_tokens)
 --
 -- Scope: users, roles, user_roles, universities, faculties, departments,
--- programs. Nothing beyond this chunk's domains is created here — see
+-- programs, permissions, role_permissions, refresh_tokens,
+-- email_verification_tokens. Nothing beyond this is created here — see
 -- docs/database-guidelines.md ("Future schema domains") for what comes next.
+--
+-- After running this file, run database/seed_rbac.sql to populate the
+-- initial roles/permissions/role_permissions catalog — without it,
+-- registration has no STUDENT role to assign and RBAC has nothing to
+-- check against.
 --
 -- This script is the deliberately-controlled alternative to
 -- sequelize.sync({ alter: true }) / sync({ force: true }), which this
@@ -207,4 +216,85 @@ CREATE TABLE IF NOT EXISTS programs (
     ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT fk_programs_department FOREIGN KEY (department_id) REFERENCES departments (id)
     ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------
+-- permissions — reference table of grantable actions (USER_VIEW,
+-- ROLE_ASSIGN, ...). Same VARCHAR-not-ENUM extensibility reasoning as
+-- roles.name. Not soft-deletable: reference data is hard-removed.
+-- -----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS permissions (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name        VARCHAR(50)  NOT NULL,
+  description VARCHAR(255) NULL,
+  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_permissions_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------
+-- role_permissions — many-to-many join between roles and permissions.
+-- Pure relational data: hard-deleted, cascades with its parent role or
+-- permission (same policy as user_roles).
+-- -----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS role_permissions (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  role_id       BIGINT UNSIGNED NOT NULL,
+  permission_id BIGINT UNSIGNED NOT NULL,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_role_permissions_role_permission (role_id, permission_id),
+  KEY ix_role_permissions_permission_id (permission_id),
+  CONSTRAINT fk_role_permissions_role FOREIGN KEY (role_id) REFERENCES roles (id)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT fk_role_permissions_permission FOREIGN KEY (permission_id) REFERENCES permissions (id)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------
+-- refresh_tokens — one row per issued refresh token. Only a SHA-256 hash
+-- of the raw token is stored (never the token itself) — see
+-- docs/database-guidelines.md, "Token hashing" for why SHA-256 rather
+-- than bcrypt is correct here. Revocation is a column (revoked_at), not
+-- a delete, so a token's history stays inspectable; hard-deleted only
+-- when its user is (CASCADE), same policy as user_roles.
+-- -----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id       BIGINT UNSIGNED NOT NULL,
+  token_hash    CHAR(64)  NOT NULL,
+  expires_at    DATETIME  NOT NULL,
+  revoked_at    DATETIME  NULL,
+  last_used_at  DATETIME  NULL,
+  created_at    DATETIME  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME  NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_refresh_tokens_token_hash (token_hash),
+  KEY ix_refresh_tokens_user_id (user_id),
+  KEY ix_refresh_tokens_expires_at (expires_at),
+  CONSTRAINT fk_refresh_tokens_user FOREIGN KEY (user_id) REFERENCES users (id)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------
+-- email_verification_tokens — one row per issued verification token.
+-- Same hashing rationale as refresh_tokens. `used_at` marks single-use
+-- consumption; hard-deleted only when its user is (CASCADE).
+-- -----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id     BIGINT UNSIGNED NOT NULL,
+  token_hash  CHAR(64) NOT NULL,
+  expires_at  DATETIME NOT NULL,
+  used_at     DATETIME NULL,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_email_verification_tokens_token_hash (token_hash),
+  KEY ix_email_verification_tokens_user_id (user_id),
+  KEY ix_email_verification_tokens_expires_at (expires_at),
+  CONSTRAINT fk_email_verification_tokens_user FOREIGN KEY (user_id) REFERENCES users (id)
+    ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

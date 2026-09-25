@@ -1,8 +1,10 @@
 /**
  * Sequelize model registry and association wiring.
  *
- * Chunk 02 scope only: Identity (User, Role, UserRole) and Institution
- * (University, Faculty, Department, Program). See
+ * Chunk 02 scope: Identity (User, Role, UserRole) and Institution
+ * (University, Faculty, Department, Program).
+ * Chunk 03 scope: RBAC (Permission, RolePermission) and auth token
+ * storage (RefreshToken, EmailVerificationToken). See
  * docs/database-guidelines.md for future domains.
  *
  * IMPORTANT: this module never calls sequelize.sync(). Schema is created
@@ -19,6 +21,10 @@ const defineUniversity = require('./university.model');
 const defineFaculty = require('./faculty.model');
 const defineDepartment = require('./department.model');
 const defineProgram = require('./program.model');
+const definePermission = require('./permission.model');
+const defineRolePermission = require('./role-permission.model');
+const defineRefreshToken = require('./refresh-token.model');
+const defineEmailVerificationToken = require('./email-verification-token.model');
 
 const User = defineUser(sequelize);
 const Role = defineRole(sequelize);
@@ -27,6 +33,10 @@ const University = defineUniversity(sequelize);
 const Faculty = defineFaculty(sequelize);
 const Department = defineDepartment(sequelize);
 const Program = defineProgram(sequelize);
+const Permission = definePermission(sequelize);
+const RolePermission = defineRolePermission(sequelize);
+const RefreshToken = defineRefreshToken(sequelize);
+const EmailVerificationToken = defineEmailVerificationToken(sequelize);
 
 // ---- Identity: User <-> Role (many-to-many via UserRole) ----------------
 // A pure join table, so both sides cascade if a user or role is ever
@@ -82,6 +92,42 @@ Department.hasMany(Program, {
 });
 Program.belongsTo(Department, { foreignKey: 'departmentId', as: 'department' });
 
+// ---- RBAC: Role <-> Permission (many-to-many via RolePermission) --------
+// Pure join table, same cascade reasoning as UserRole.
+Role.belongsToMany(Permission, {
+  through: RolePermission,
+  foreignKey: 'roleId',
+  otherKey: 'permissionId',
+  as: 'permissions',
+});
+Permission.belongsToMany(Role, {
+  through: RolePermission,
+  foreignKey: 'permissionId',
+  otherKey: 'roleId',
+  as: 'roles',
+});
+Role.hasMany(RolePermission, { foreignKey: 'roleId', as: 'rolePermissions', onDelete: 'CASCADE' });
+Permission.hasMany(RolePermission, {
+  foreignKey: 'permissionId',
+  as: 'permissionAssignments',
+  onDelete: 'CASCADE',
+});
+RolePermission.belongsTo(Role, { foreignKey: 'roleId' });
+RolePermission.belongsTo(Permission, { foreignKey: 'permissionId' });
+
+// ---- Auth tokens: per-user, hard-deleted with their user ------------------
+// Not institutional entities — see docs/database-guidelines.md, "Foreign
+// key strategy". CASCADE mirrors the UserRole precedent.
+User.hasMany(RefreshToken, { foreignKey: 'userId', as: 'refreshTokens', onDelete: 'CASCADE' });
+RefreshToken.belongsTo(User, { foreignKey: 'userId' });
+
+User.hasMany(EmailVerificationToken, {
+  foreignKey: 'userId',
+  as: 'emailVerificationTokens',
+  onDelete: 'CASCADE',
+});
+EmailVerificationToken.belongsTo(User, { foreignKey: 'userId' });
+
 module.exports = {
   sequelize,
   User,
@@ -91,4 +137,8 @@ module.exports = {
   Faculty,
   Department,
   Program,
+  Permission,
+  RolePermission,
+  RefreshToken,
+  EmailVerificationToken,
 };

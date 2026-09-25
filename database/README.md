@@ -11,11 +11,19 @@ for why (`sequelize.sync()` is intentionally not used anywhere).
 
 ```bash
 mysql -h <DB_HOST> -P <DB_PORT> -u <DB_USER> -p <DB_NAME> < database/schema.sql
+mysql -h <DB_HOST> -P <DB_PORT> -u <DB_USER> -p <DB_NAME> < database/seed_rbac.sql
 ```
 
-Substitute the same values you put in `server/.env`. The script contains
-no credentials or environment-specific values — you always supply the
-connection details on the command line.
+Substitute the same values you put in `server/.env`. Neither script
+contains credentials or environment-specific values — you always supply
+the connection details on the command line.
+
+`seed_rbac.sql` populates the initial roles/permissions/role_permissions
+catalog (§19–21 of the Chunk 03 brief). This is reference/catalog data
+the application depends on to function — registration has no `STUDENT`
+role to assign, and RBAC has nothing to check permissions against,
+without it. It is idempotent (`ON DUPLICATE KEY UPDATE`), so re-running
+it is always safe.
 
 It uses `CREATE TABLE IF NOT EXISTS`, so re-running it against a database
 that already has these tables is a safe no-op; it does not alter an
