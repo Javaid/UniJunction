@@ -36,8 +36,11 @@ alongside it.
 its primary key.** In addition, entities meant to be referenced from the
 public API (`users`, `universities`, `faculties`, `departments`,
 `programs`, plus `university_domains` and `university_memberships` as of
-Chunk 04) carry a separate `uuid` column (`CHAR(36)`, `UUIDV4`, unique,
-indexed) that the API uses instead of the raw `id`.
+Chunk 04, plus `student_profiles`, `skills`, `interests`,
+`research_areas`, `languages`, `student_certifications`,
+`student_achievements`, and `student_goals` as of Chunk 05) carry a
+separate `uuid` column (`CHAR(36)`, `UUIDV4`, unique, indexed) that the
+API uses instead of the raw `id`.
 
 Why a hybrid instead of picking one:
 
@@ -80,6 +83,13 @@ Why a hybrid instead of picking one:
   - `audit_logs` (Chunk 04) — never addressed by id from any endpoint; a
     caller only ever queries it by `entity_type`/`entity_id`,
     `university_id`, or `actor_user_id`, never by its own row identity.
+  - `student_skills`, `student_interests`, `student_research_interests`,
+    `student_languages` (Chunk 05) — pure per-student join tables, same
+    reasoning as `user_roles`: never referenced by their own id from a
+    URL. The client addresses the *catalog* entry
+    (`/students/me/skills/:skillId`, where `:skillId` is the `skills`
+    row's `uuid`, not the join row's id) — see
+    [`student-profiles.md`](./student-profiles.md) §13.
 
 This is intentionally not a "just use UUIDs everywhere" or "just use
 auto-increment everywhere" decision — it is a per-table rule
@@ -132,41 +142,79 @@ uniformly.
     `universities` are soft-deleted, never hard-deleted — this is the
     defined behavior if a hard delete were ever performed directly
     against the database.)
+  - `users.id ← student_profiles.user_id` (Chunk 05): **CASCADE** — a
+    per-user artifact, same reasoning as `university_memberships`.
+  - `universities.id ← student_profiles.university_id` (Chunk 05):
+    **RESTRICT** — same reasoning as faculties/departments/programs; a
+    university must not be able to take a student's academic record down
+    with it via a careless hard delete.
+  - `programs.id ← student_profiles.program_id` (Chunk 05): **SET NULL**
+    — `program_id` is already optional on `student_profiles` (a student
+    without a declared major is valid), so losing the program just
+    clears the reference, mirroring `faculties.id ← departments.faculty_id`.
+  - `student_profiles.id ← student_skills/student_interests/
+    student_research_interests/student_languages/student_certifications/
+    student_achievements/student_goals.student_profile_id` (Chunk 05):
+    **CASCADE** — all seven are owned exclusively by their profile.
+  - `skills.id ← student_skills.skill_id`,
+    `interests.id ← student_interests.interest_id`,
+    `research_areas.id ← student_research_interests.research_area_id`,
+    `languages.id ← student_languages.language_id` (Chunk 05):
+    **CASCADE** — these catalog tables are reference data like `roles`,
+    so the same `roles.id ← user_roles.role_id` reasoning applies: if a
+    catalog entry is truly destroyed, the join rows referencing it are
+    meaningless and should go with it, rather than blocking the delete.
+  - `research_areas.id ← research_areas.parent_id` (Chunk 05, self-
+    referential): **SET NULL** — mirrors `faculties.id ← departments.faculty_id`;
+    an optional parent reference clears rather than blocks or cascades.
 - `ON UPDATE CASCADE` everywhere, since the referenced key is a
   surrogate integer that only changes if a row is genuinely re-keyed
   (which shouldn't happen), and CASCADE-on-update is safe/free in that
   case.
 - Cross-row invariants a single FK cannot express — e.g. "if
   `departments.faculty_id` is set, that faculty must belong to the same
-  `departments.university_id`" — are **service-layer validation**, not a
-  DB constraint or a Sequelize model hook. No CRUD API exists yet for
-  these tables (out of scope for this chunk), so this is documented here
-  for whoever builds that service.
+  `departments.university_id`," or "if `student_profiles.program_id` is
+  set, that program must belong to the same `student_profiles.university_id`"
+  (Chunk 05) — are **service-layer validation**, not a DB constraint or a
+  Sequelize model hook.
 
 ## 6. Soft-Delete Strategy
 
 - **Paranoid (`deleted_at`, Sequelize `paranoid: true`):** `users`,
   `universities`, `faculties`, `departments`, `programs`, plus
-  `university_domains` and `university_memberships` (Chunk 04). These are
-  the entities described in the brief as "major institutional entities"
-  (or, for `users`, an entity whose removal has real downstream
-  consequences — role assignments, future profiles, etc.). Soft-delete is
-  the normal "remove this" path; a real `DELETE` is blocked by RESTRICT
-  wherever it would orphan children (see §5). Notably, **there is no hard
-  deletion endpoint anywhere in the Chunk 04 university-management API at
-  all** — a university's terminal state is the `DEACTIVATED` status, not
-  a `DELETE` request (see `university-management.md` §3).
+  `university_domains` and `university_memberships` (Chunk 04), plus
+  `student_profiles`, `student_certifications`, `student_achievements`,
+  and `student_goals` (Chunk 05). These are the entities described in the
+  brief as "major institutional entities" (or, for `users`, an entity
+  whose removal has real downstream consequences — role assignments,
+  profiles, etc.). Soft-delete is the normal "remove this" path; a real
+  `DELETE` is blocked by RESTRICT wherever it would orphan children (see
+  §5). Notably, **there is no hard deletion endpoint anywhere in the
+  Chunk 04 university-management API, nor in the Chunk 05
+  student-profile API** — a university's terminal state is the
+  `DEACTIVATED` status (see `university-management.md` §3), and no
+  delete endpoint exists at all yet for a student profile, certification,
+  achievement, or goal (see `student-profiles.md` §3, "Known
+  limitations").
 - **Hard-delete (no `deleted_at`):** `roles`, `user_roles`,
   `permissions`, `role_permissions`. Reference data and pure join rows
   don't carry the same "we might need to restore this" requirement —
   removing a role assignment is just removing a fact, not retiring an
-  entity.
+  entity. The Chunk 05 catalogs (`skills`, `interests`, `research_areas`,
+  `languages`) and their join tables (`student_skills`,
+  `student_interests`, `student_research_interests`,
+  `student_languages`) follow the same rule — see below.
 - **State tracked by a dedicated column, not soft-delete:**
   `refresh_tokens` (`revoked_at`) and `email_verification_tokens`
   (`used_at`). A token's "no longer valid" state is meaningfully
   different from "deleted" — a revoked/used token's history stays
   inspectable (when was it issued, when was it revoked/used) rather than
-  disappearing from view the way `deleted_at` would hide it.
+  disappearing from view the way `deleted_at` would hide it. The Chunk 05
+  catalog tables (`skills`, `interests`, `research_areas`, `languages`)
+  follow the analogous pattern: retiring an entry is
+  `status: INACTIVE`, not `deleted_at` — a join-table row referencing it
+  must stay meaningful history, not silently "restorable" alongside the
+  catalog entry.
 - **Never deleted at all:** `audit_logs` (Chunk 04). Not paranoid, no
   `deleted_at` column — an audit trail that could itself be deleted (soft
   or hard) would defeat its purpose. Rows accumulate indefinitely; a
@@ -203,10 +251,15 @@ column:
   `refresh_tokens.token_hash`, `email_verification_tokens.token_hash`,
   `university_domains.uuid`, `university_domains.domain` (globally
   unique — see `university-management.md` §6),
-  `university_memberships.uuid` — each is how that row is looked up by a
-  single value (login by email, entity by public identifier,
-  role/permission by name, a token by its hash, a domain by its
-  hostname).
+  `university_memberships.uuid`, `student_profiles.uuid`,
+  `student_profiles.user_id` (Chunk 05 — at most one profile per user),
+  `skills.uuid`/`.name`/`.slug`, `interests.uuid`/`.name`/`.slug`,
+  `research_areas.uuid`/`.slug`, `languages.uuid`/`.name`/`.code`,
+  `student_certifications.uuid`, `student_achievements.uuid`,
+  `student_goals.uuid` — each is how that row is looked up by a single
+  value (login by email, entity by public identifier, role/permission by
+  name, a token by its hash, a domain by its hostname, a catalog entry by
+  its unique name/slug/code).
 - **Foreign keys:** `faculties.university_id`,
   `departments.university_id`, `departments.faculty_id`,
   `programs.university_id`, `programs.department_id`,
@@ -214,20 +267,49 @@ column:
   `email_verification_tokens.user_id`,
   `university_domains.university_id`,
   `university_memberships.university_id`, `audit_logs.university_id`,
-  `audit_logs.actor_user_id` — every FK used in a "give me all X for this
-  Y" query (all faculties for a university, all of a user's refresh
-  tokens, ...).
+  `audit_logs.actor_user_id`, `student_profiles.university_id`,
+  `student_profiles.program_id`, `student_skills.skill_id`,
+  `student_interests.interest_id`,
+  `student_research_interests.research_area_id`,
+  `student_languages.language_id`, `research_areas.parent_id`,
+  `student_certifications.student_profile_id`,
+  `student_achievements.student_profile_id`,
+  `student_goals.student_profile_id` — every FK used in a "give me all X
+  for this Y" query (all faculties for a university, all of a student's
+  certifications, all children of a research area, ...).
 - **Composite unique:** `university_memberships (user_id, university_id,
   membership_type)` — a user can hold at most one membership of a given
   type at a given university (e.g. one `STUDENT` membership and, later,
   a separate `ADMIN` membership at the same institution, but never two
   `STUDENT` rows for the same user/university pair).
+  `student_profiles (university_id, student_identifier)` (Chunk 05) — a
+  student number is unique within its issuing institution, not globally
+  (see `student-profiles.md` §12); MySQL treats each `NULL` as distinct,
+  so any number of students without one is fine.
+  `student_skills (student_profile_id, skill_id)`,
+  `student_interests (student_profile_id, interest_id)`,
+  `student_research_interests (student_profile_id, research_area_id)`,
+  `student_languages (student_profile_id, language_id)` (Chunk 05) —
+  prevents a duplicate add at the database level, not only in the
+  service layer.
+- **Composite, non-unique:**
+  `student_profiles (university_id, academic_status)` (Chunk 05) — the
+  admin student-list endpoint's primary access pattern is "this
+  university's students, filtered by status" (see `student-profiles.md`
+  §19); a composite index matches that query directly rather than
+  relying on the optimizer to combine two single-column indexes.
 - **Filter columns:** `users.status`, `universities.status`,
   `universities.country`, `universities.city`, `programs.degree_level`,
-  `universities.verification_status`, `university_memberships.status` —
+  `universities.verification_status`, `university_memberships.status`,
+  `student_profiles.university_id`, `student_profiles.program_id`,
+  `student_profiles.academic_status`,
+  `student_profiles.availability_status`, `skills.category`,
+  `skills.status`, `interests.category`, `interests.status`,
+  `research_areas.status`, `languages.status`, `student_goals.status` —
   fields the brief specifically calls out as filter/search dimensions
   (e.g. "universities in this country", "bachelor's programs",
-  "pending-verification universities").
+  "pending-verification universities", "this university's ACTIVE
+  students", "PROGRAMMING skills").
 - **Audit queries:** `audit_logs (entity_type, entity_id)` (composite —
   "show me the history of this specific row") and
   `audit_logs.created_at` (chronological listing/pruning).
@@ -236,11 +318,15 @@ column:
   background job (`DELETE ... WHERE expires_at < NOW()`); indexed now
   since that access pattern is already designed for, even though the job
   itself isn't built in this chunk.
-- **Not indexed:** free-text fields (`description`), rarely-filtered
-  optional contact fields (`phone`, `website_url`), and anything without
-  a concrete query driving it. An index that isn't used still costs
-  writes and storage — it is added when a query needs it, not
-  preemptively.
+- **Not indexed:** free-text fields (`description`, `bio`), rarely-
+  filtered optional contact fields (`phone`, `website_url`,
+  `credential_url`), and anything without a concrete query driving it.
+  An index that isn't used still costs writes and storage — it is added
+  when a query needs it, not preemptively. Deliberately **not**
+  over-indexed: `student_profiles` gets exactly the single-column and
+  composite indexes its actual access patterns (admin roster, per-
+  university/program/status filtering) need — not a separate composite
+  for every conceivable combination of filters.
 
 ## 9. Multi-Tenancy Strategy
 
@@ -263,17 +349,28 @@ core identity itself tenant-agnostic while still letting a user belong to
 several institutions.
 
 `university_id` foreign keys on `faculties`, `departments`, `programs`,
-`university_domains`, and `university_memberships` give per-university
-scoping wherever it's actually needed (e.g. "show me this university's
-departments"), while every table stays in the same schema and is
-trivially joinable across the whole platform. Chunk 04's
+`university_domains`, `university_memberships`, and — as of Chunk 05 —
+`student_profiles` give per-university scoping wherever it's actually
+needed (e.g. "show me this university's departments," "list this
+university's students"), while every table stays in the same schema and
+is trivially joinable across the whole platform. Chunk 04's
 `assertUniversityAccess` service
 (`server/src/modules/university/access.service.js`) is where this logical
-boundary is actually *enforced* for mutating requests — see
-[`university-management.md`](./university-management.md) §8. Reads of
+boundary is actually *enforced* for mutating requests, and Chunk 05
+reuses that exact same service unchanged for the admin student-roster
+endpoint — see [`university-management.md`](./university-management.md)
+§8 and [`student-profiles.md`](./student-profiles.md) §19. Reads of
 universities/faculties/departments/programs remain intentionally public
 (no tenant check at all) to preserve cross-university discoverability;
-only mutations and membership/domain reads are university-scoped.
+Chunk 05 extends this same discoverability principle one level further
+with `student_profiles.profile_visibility` (§8/§10 of
+`student-profiles.md`) — a *student-controlled*, not purely
+tenant-controlled, visibility dimension, since "can University B see
+University A's students at all" is no longer a single yes/no per
+university but a per-profile choice the student makes. Institutional
+oversight (`SUPER_ADMIN`, the student's own `UNIVERSITY_ADMIN`) still
+always wins over that choice, the same way `assertUniversityAccess`
+always wins for institutional admin actions elsewhere.
 
 ## 10. Transaction Strategy
 
@@ -403,17 +500,28 @@ consistent across environments.
 Chunk 03 implemented the RBAC domain (`permissions`, `role_permissions`)
 and auth token storage (`refresh_tokens`, `email_verification_tokens`);
 Chunk 04 implemented `university_domains`, `university_memberships`, and
-`audit_logs` (see [`authentication.md`](./authentication.md),
+`audit_logs`; Chunk 05 implemented the student academic profile domain
+(`student_profiles`, `skills`, `student_skills`, `interests`,
+`student_interests`, `research_areas`, `student_research_interests`,
+`languages`, `student_languages`, `student_certifications`,
+`student_achievements`, `student_goals` — see
+[`student-profiles.md`](./student-profiles.md)). See
+[`authentication.md`](./authentication.md),
 [`university-management.md`](./university-management.md), and
-[`database-erd.md`](./database-erd.md)). Everything below is still
-documented only — **none of these tables exist yet**, and none are
-created as empty placeholders. Each will be designed deliberately in the
-chunk that actually needs it, following the same conventions above.
+[`database-erd.md`](./database-erd.md) for the others. Everything below
+is still documented only — **none of these tables exist yet**, and none
+are created as empty placeholders. Each will be designed deliberately in
+the chunk that actually needs it, following the same conventions above.
 
-- **Academic:** `students` (student profile), `faculty_profiles`,
-  `researchers`, `courses`, `skills`, `interests`, `research_areas`,
-  `publications`
+- **Academic:** `faculty_profiles`, `researchers`, `courses`,
+  `publications` (`skills`, `interests`, and `research_areas` themselves
+  are now implemented as platform-wide catalogs — see
+  `student-profiles.md` §13 — but faculty/researcher profiles that would
+  reuse them are not)
 - **Network:** `connections`, `connection_requests`, `follows`, `blocks`
+  (referenced but not built by Chunk 05's `CONNECTIONS_ONLY` visibility
+  value, conservatively treated as `PRIVATE` until this domain exists —
+  see `student-profiles.md` §8)
 - **Collaboration:** `projects`, `project_members`, `research_projects`,
   `research_applications`, `mentorships`
 - **Communication:** `conversations`, `conversation_members`,
@@ -422,6 +530,11 @@ chunk that actually needs it, following the same conventions above.
 - **Opportunities:** `opportunities`, `opportunity_applications`
 - **Administration:** `reports`, `moderation_cases` (`audit_logs` itself
   is now implemented — see §6 above and `university-management.md` §12)
+- **Search:** a dedicated search engine (Elasticsearch/OpenSearch) for
+  cross-university discovery — Chunk 05 deliberately normalizes every
+  relationship a future search layer would filter on (university,
+  program, skills, interests, research areas, languages, availability)
+  without introducing one yet — see `student-profiles.md` §17.
 
 ## Testing Against MySQL
 
@@ -467,3 +580,33 @@ tests) and a dedicated fixture helper,
 `UNIVERSITY_ADMIN` role assignment *and* the matching `ACTIVE` `ADMIN`
 membership together, since `assertUniversityAccess` requires both). Also
 skips gracefully with no database reachable, per the same convention.
+
+The Chunk 05 student-profile integration tests
+(`server/tests/student/*.test.js`) reuse `institutionFixtures.js` and add
+`server/tests/helpers/studentFixtures.js` (`createStudentMember` — a
+`STUDENT`-role user with an `ACTIVE` `STUDENT`-type membership, the
+combination `student-access.service.js` requires; `seedCatalogSample` —
+a small, self-sufficient skills/interests/research-area-hierarchy/
+languages catalog, so these tests never depend on
+`database/seed_catalog.sql` having been run separately). `testDb.js`
+gained `resetStudentProfileTables()` (clears every Chunk 05 table except
+the catalogs, which — like `roles`/`permissions` — are reference data,
+not per-test fixtures) and `resetInstitutionTables()` now calls it
+internally first, since `student_profiles.university_id` is `RESTRICT`:
+a leftover profile from an earlier test would otherwise block
+`DELETE FROM universities`.
+
+**A connection-pinning fix that affects every `reset*Tables()` helper.**
+`SET FOREIGN_KEY_CHECKS = 0` is connection/session-scoped in MySQL —
+issuing it via one `sequelize.query()` call and then a `DELETE` via a
+separate `sequelize.query()` call gives no guarantee both run on the
+*same* pooled connection. Under enough concurrent test-suite load
+(exactly what adding Chunk 05's ~15 additional test files triggered),
+that mismatch surfaces as an intermittent "foreign key constraint fails"
+error on a `DELETE` that should have had checks disabled. The fix:
+`runWithForeignKeyChecksDisabled()` (`testDb.js`) wraps the `SET`, every
+`DELETE`, and the restoring `SET FOREIGN_KEY_CHECKS = 1` in one
+`sequelize.transaction()`, which pins all of them to a single connection.
+This was a latent bug since Chunk 04's `resetInstitutionTables()`/
+`resetAuthTables()`, not something Chunk 05 introduced — it simply took
+enough concurrent load to become visible.

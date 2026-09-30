@@ -57,6 +57,10 @@ const env = {
   rateLimit: {
     authWindowMs: toInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
     authMax: toInt(process.env.AUTH_RATE_LIMIT_MAX, 20),
+    // Deliberately more generous than the auth limiter — see
+    // middleware/rateLimiter.js, profileMutationRateLimiter.
+    profileWindowMs: toInt(process.env.PROFILE_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+    profileMax: toInt(process.env.PROFILE_RATE_LIMIT_MAX, 120),
   },
 
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:5173',

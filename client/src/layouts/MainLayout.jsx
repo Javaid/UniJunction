@@ -15,6 +15,7 @@ const MainLayout = () => {
   const navigate = useNavigate();
   const { isAuthenticated, user } = useSelector((state) => state.auth);
   const isInstitutionalAdmin = (user?.roles || []).some((role) => ADMIN_ROLES.includes(role));
+  const isStudent = (user?.roles || []).includes('STUDENT');
 
   const handleLogout = async () => {
     await dispatch(logoutUser());
@@ -34,6 +35,11 @@ const MainLayout = () => {
                 <NavLink to="/dashboard" className={navLinkClasses}>
                   Dashboard
                 </NavLink>
+                {isStudent && (
+                  <NavLink to="/student/profile" className={navLinkClasses}>
+                    My Profile
+                  </NavLink>
+                )}
                 {isInstitutionalAdmin && (
                   <NavLink to="/admin" className={navLinkClasses}>
                     Admin

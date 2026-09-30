@@ -21,4 +21,22 @@ const authRateLimiter = rateLimit({
   message: { success: false, message: 'Too many requests. Please try again later.' },
 });
 
-module.exports = { authRateLimiter };
+/**
+ * §44: a sensible, deliberately generous limiter for student-profile
+ * mutation endpoints (create/update profile, add/remove a skill or
+ * interest, ...). Ordinary profile editing (a student adding several
+ * skills or updating a few sections in one sitting) should never trip
+ * this — it exists only to blunt scripted abuse, not to get in the way
+ * of normal use. Separate config from the auth limiter since profile
+ * editing is a very different traffic shape from login/register.
+ */
+const profileMutationRateLimiter = rateLimit({
+  windowMs: env.rateLimit.profileWindowMs,
+  max: env.rateLimit.profileMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => env.isTest,
+  message: { success: false, message: 'Too many requests. Please try again later.' },
+});
+
+module.exports = { authRateLimiter, profileMutationRateLimiter };

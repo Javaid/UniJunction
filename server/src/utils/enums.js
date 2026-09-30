@@ -82,6 +82,116 @@ const DEGREE_LEVELS = Object.freeze([
   'PHD',
 ]);
 
+// A student profile's institutional/enrollment state — see
+// docs/student-profiles.md, "Academic status". Changed only via the
+// dedicated PATCH .../status endpoint, never via the general profile
+// update, mirroring the university/faculty/department/program status
+// pattern from Chunk 04.
+const ACADEMIC_STATUS = Object.freeze({
+  ACTIVE: 'ACTIVE',
+  ON_LEAVE: 'ON_LEAVE',
+  GRADUATED: 'GRADUATED',
+  SUSPENDED: 'SUSPENDED',
+  WITHDRAWN: 'WITHDRAWN',
+});
+
+// Who may see a student profile, owner-controlled but never able to
+// override institutional/legal access (SUPER_ADMIN and the student's own
+// UNIVERSITY_ADMIN always retain access) — see
+// docs/student-profiles.md, "Visibility".
+const PROFILE_VISIBILITY = Object.freeze({
+  PUBLIC: 'PUBLIC',
+  ACADEMIC_NETWORK: 'ACADEMIC_NETWORK',
+  UNIVERSITY_ONLY: 'UNIVERSITY_ONLY',
+  CONNECTIONS_ONLY: 'CONNECTIONS_ONLY',
+  PRIVATE: 'PRIVATE',
+});
+
+// Self-reported openness to collaboration — a future signal for
+// project/research matching, not built in this chunk.
+const AVAILABILITY_STATUS = Object.freeze({
+  NOT_SPECIFIED: 'NOT_SPECIFIED',
+  AVAILABLE: 'AVAILABLE',
+  LIMITED: 'LIMITED',
+  NOT_AVAILABLE: 'NOT_AVAILABLE',
+});
+
+// Self-reported skill level — never a certified qualification unless a
+// future chunk adds verification. See docs/student-profiles.md, "Skills".
+const SKILL_PROFICIENCY = Object.freeze({
+  BEGINNER: 'BEGINNER',
+  INTERMEDIATE: 'INTERMEDIATE',
+  ADVANCED: 'ADVANCED',
+  EXPERT: 'EXPERT',
+});
+
+// Starting, extensible vocabulary for skills.category — enforced by the
+// Joi validator, not a DB constraint (skills.category is VARCHAR), so a
+// new category never requires a migration.
+const SKILL_CATEGORIES = Object.freeze([
+  'PROGRAMMING',
+  'DATABASE',
+  'AI_ML',
+  'CLOUD',
+  'WEB',
+  'MOBILE',
+  'DESIGN',
+  'DATA',
+  'RESEARCH',
+  'BUSINESS',
+  'COMMUNICATION',
+  'OTHER',
+]);
+
+// Shared ACTIVE/INACTIVE lifecycle for the platform-wide catalog tables
+// (skills, interests, research_areas, languages). Deliberately a
+// separate enum from ORG_UNIT_STATUS even though the values are
+// identical — ORG_UNIT_STATUS is for per-university academic structures
+// toggled by university admins; catalog entries are global and
+// platform-admin-managed. Conflating the two would make a future,
+// legitimate divergence (e.g. a catalog-only "DEPRECATED" state) an
+// awkward retrofit.
+const CATALOG_STATUS = Object.freeze({
+  ACTIVE: 'ACTIVE',
+  INACTIVE: 'INACTIVE',
+});
+
+// Self-described depth of interest in a research area — not an academic
+// qualification. See docs/student-profiles.md, "Research interests".
+const RESEARCH_INTEREST_LEVEL = Object.freeze({
+  CURIOUS: 'CURIOUS',
+  INTERESTED: 'INTERESTED',
+  ACTIVE: 'ACTIVE',
+  ADVANCED: 'ADVANCED',
+});
+
+const LANGUAGE_PROFICIENCY = Object.freeze({
+  BASIC: 'BASIC',
+  CONVERSATIONAL: 'CONVERSATIONAL',
+  PROFESSIONAL: 'PROFESSIONAL',
+  FLUENT: 'FLUENT',
+  NATIVE: 'NATIVE',
+});
+
+const GOAL_TYPE = Object.freeze({
+  RESEARCH: 'RESEARCH',
+  MENTORSHIP: 'MENTORSHIP',
+  INTERNSHIP: 'INTERNSHIP',
+  PROJECT: 'PROJECT',
+  SCHOLARSHIP: 'SCHOLARSHIP',
+  GRADUATE_STUDY: 'GRADUATE_STUDY',
+  CAREER: 'CAREER',
+  COMPETITION: 'COMPETITION',
+  OTHER: 'OTHER',
+});
+
+const GOAL_STATUS = Object.freeze({
+  ACTIVE: 'ACTIVE',
+  COMPLETED: 'COMPLETED',
+  PAUSED: 'PAUSED',
+  CANCELLED: 'CANCELLED',
+});
+
 module.exports = {
   USER_STATUS,
   UNIVERSITY_STATUS,
@@ -91,4 +201,14 @@ module.exports = {
   MEMBERSHIP_TYPE,
   MEMBERSHIP_STATUS,
   DEGREE_LEVELS,
+  ACADEMIC_STATUS,
+  PROFILE_VISIBILITY,
+  AVAILABILITY_STATUS,
+  SKILL_PROFICIENCY,
+  SKILL_CATEGORIES,
+  CATALOG_STATUS,
+  RESEARCH_INTEREST_LEVEL,
+  LANGUAGE_PROFICIENCY,
+  GOAL_TYPE,
+  GOAL_STATUS,
 };

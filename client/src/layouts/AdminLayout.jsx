@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
+import { useSelector } from 'react-redux';
 
 const navLinkClasses = ({ isActive }) =>
   `block rounded-md px-3 py-2 text-sm font-medium transition-colors ${
@@ -10,20 +11,32 @@ const navLinkClasses = ({ isActive }) =>
  * Nested inside MainLayout, so the global header/nav/footer stay in
  * place — this only adds the admin-section sidebar.
  */
-const AdminLayout = () => (
-  <div className="grid grid-cols-1 gap-6 md:grid-cols-[200px_1fr]">
-    <aside className="space-y-1">
-      <NavLink to="/admin" end className={navLinkClasses}>
-        Dashboard
-      </NavLink>
-      <NavLink to="/admin/universities" className={navLinkClasses}>
-        Universities
-      </NavLink>
-    </aside>
-    <div className="min-w-0">
-      <Outlet />
+const AdminLayout = () => {
+  const isUniversityAdmin = useSelector((state) => (state.auth.user?.roles || []).includes('UNIVERSITY_ADMIN'));
+
+  return (
+    <div className="grid grid-cols-1 gap-6 md:grid-cols-[200px_1fr]">
+      <aside className="space-y-1">
+        <NavLink to="/admin" end className={navLinkClasses}>
+          Dashboard
+        </NavLink>
+        <NavLink to="/admin/universities" className={navLinkClasses}>
+          Universities
+        </NavLink>
+        {/* §51: a UNIVERSITY_ADMIN's own student roster — a standalone
+            route outside /admin/*, but reachable from here since this is
+            the only admin navigation surface a UNIVERSITY_ADMIN sees. */}
+        {isUniversityAdmin && (
+          <NavLink to="/university/students" className={navLinkClasses}>
+            My Students
+          </NavLink>
+        )}
+      </aside>
+      <div className="min-w-0">
+        <Outlet />
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 export default AdminLayout;

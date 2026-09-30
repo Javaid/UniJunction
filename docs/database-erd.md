@@ -1,12 +1,14 @@
-# Database ERD — Chunks 02–04 (Identity, Institution, RBAC, Auth Tokens & University Management)
+# Database ERD — Chunks 02–05 (Identity, Institution, RBAC, Auth Tokens, University Management & Student Profiles)
 
 This diagram covers only the tables implemented so far. See
 [`database-guidelines.md`](./database-guidelines.md) for the domains
 planned for later chunks, [`authentication.md`](./authentication.md) for
-how the RBAC and token tables are used, and
+how the RBAC and token tables are used,
 [`university-management.md`](./university-management.md) for how the
 Chunk 04 tables (`university_domains`, `university_memberships`,
-`audit_logs`) are used.
+`audit_logs`) are used, and
+[`student-profiles.md`](./student-profiles.md) for how the Chunk 05
+tables (`student_profiles` and everything hanging off it) are used.
 
 ```mermaid
 erDiagram
@@ -29,6 +31,23 @@ erDiagram
     USERS ||--o{ UNIVERSITY_MEMBERSHIPS : "holds"
     USERS ||--o{ AUDIT_LOGS : "acts as (optional)"
     UNIVERSITIES ||--o{ AUDIT_LOGS : "concerns (optional)"
+
+    USERS ||--o| STUDENT_PROFILES : "has at most one"
+    UNIVERSITIES ||--o{ STUDENT_PROFILES : "enrolls"
+    PROGRAMS ||--o{ STUDENT_PROFILES : "optionally enrolls in"
+
+    STUDENT_PROFILES ||--o{ STUDENT_SKILLS : "has"
+    SKILLS ||--o{ STUDENT_SKILLS : "claimed via"
+    STUDENT_PROFILES ||--o{ STUDENT_INTERESTS : "has"
+    INTERESTS ||--o{ STUDENT_INTERESTS : "claimed via"
+    STUDENT_PROFILES ||--o{ STUDENT_RESEARCH_INTERESTS : "has"
+    RESEARCH_AREAS ||--o{ STUDENT_RESEARCH_INTERESTS : "claimed via"
+    RESEARCH_AREAS ||--o{ RESEARCH_AREAS : "parent of"
+    STUDENT_PROFILES ||--o{ STUDENT_LANGUAGES : "has"
+    LANGUAGES ||--o{ STUDENT_LANGUAGES : "claimed via"
+    STUDENT_PROFILES ||--o{ STUDENT_CERTIFICATIONS : "has"
+    STUDENT_PROFILES ||--o{ STUDENT_ACHIEVEMENTS : "has"
+    STUDENT_PROFILES ||--o{ STUDENT_GOALS : "has"
 
     USERS {
         bigint id PK
@@ -205,6 +224,150 @@ erDiagram
         json metadata
         datetime created_at
     }
+
+    STUDENT_PROFILES {
+        bigint id PK
+        char_36 uuid UK
+        bigint user_id FK "unique — at most one profile per user"
+        bigint university_id FK
+        bigint program_id "FK, nullable"
+        varchar_50 student_identifier "nullable, unique per (university_id, student_identifier)"
+        smallint admission_year
+        smallint expected_graduation_year
+        tinyint current_semester "app-layer ceiling; DB is permissive"
+        enum academic_status "ACTIVE/ON_LEAVE/GRADUATED/SUSPENDED/WITHDRAWN"
+        text bio
+        varchar_150 headline
+        enum profile_visibility "PUBLIC/ACADEMIC_NETWORK/UNIVERSITY_ONLY/CONNECTIONS_ONLY/PRIVATE"
+        enum availability_status "NOT_SPECIFIED/AVAILABLE/LIMITED/NOT_AVAILABLE"
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at
+    }
+
+    SKILLS {
+        bigint id PK
+        char_36 uuid UK
+        varchar_100 name UK
+        varchar_120 slug UK
+        varchar_30 category
+        enum status "ACTIVE/INACTIVE"
+        datetime created_at
+        datetime updated_at
+    }
+
+    STUDENT_SKILLS {
+        bigint id PK
+        bigint student_profile_id FK
+        bigint skill_id FK
+        enum proficiency_level "BEGINNER/INTERMEDIATE/ADVANCED/EXPERT, self-reported"
+        decimal_3_1 years_experience
+        datetime created_at
+        datetime updated_at
+    }
+
+    INTERESTS {
+        bigint id PK
+        char_36 uuid UK
+        varchar_100 name UK
+        varchar_120 slug UK
+        varchar_30 category "nullable"
+        enum status "ACTIVE/INACTIVE"
+        datetime created_at
+        datetime updated_at
+    }
+
+    STUDENT_INTERESTS {
+        bigint id PK
+        bigint student_profile_id FK
+        bigint interest_id FK
+        datetime created_at
+        datetime updated_at
+    }
+
+    RESEARCH_AREAS {
+        bigint id PK
+        char_36 uuid UK
+        varchar_150 name
+        varchar_170 slug UK
+        bigint parent_id "FK to research_areas.id, nullable, self-referential"
+        text description
+        enum status "ACTIVE/INACTIVE"
+        datetime created_at
+        datetime updated_at
+    }
+
+    STUDENT_RESEARCH_INTERESTS {
+        bigint id PK
+        bigint student_profile_id FK
+        bigint research_area_id FK
+        enum interest_level "CURIOUS/INTERESTED/ACTIVE/ADVANCED, self-described"
+        datetime created_at
+        datetime updated_at
+    }
+
+    LANGUAGES {
+        bigint id PK
+        char_36 uuid UK
+        varchar_100 name UK
+        varchar_10 code UK "ISO 639-1 where one exists"
+        enum status "ACTIVE/INACTIVE"
+        datetime created_at
+        datetime updated_at
+    }
+
+    STUDENT_LANGUAGES {
+        bigint id PK
+        bigint student_profile_id FK
+        bigint language_id FK
+        enum proficiency_level "BASIC/CONVERSATIONAL/PROFESSIONAL/FLUENT/NATIVE"
+        datetime created_at
+        datetime updated_at
+    }
+
+    STUDENT_CERTIFICATIONS {
+        bigint id PK
+        char_36 uuid UK
+        bigint student_profile_id FK
+        varchar_255 name
+        varchar_255 issuing_organization
+        date issue_date
+        date expiry_date
+        varchar_255 credential_id
+        varchar_500 credential_url
+        text description
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at
+    }
+
+    STUDENT_ACHIEVEMENTS {
+        bigint id PK
+        char_36 uuid UK
+        bigint student_profile_id FK
+        varchar_255 title
+        text description
+        varchar_255 organization
+        date achievement_date
+        varchar_500 url
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at
+    }
+
+    STUDENT_GOALS {
+        bigint id PK
+        char_36 uuid UK
+        bigint student_profile_id FK
+        enum goal_type "RESEARCH/MENTORSHIP/INTERNSHIP/PROJECT/SCHOLARSHIP/GRADUATE_STUDY/CAREER/COMPETITION/OTHER"
+        varchar_255 title
+        text description
+        date target_date
+        enum status "ACTIVE/COMPLETED/PAUSED/CANCELLED"
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at
+    }
 ```
 
 ## Reading this diagram
@@ -253,6 +416,37 @@ erDiagram
   removal of the thing it references. It is never addressed by its own
   `id` from any API endpoint (queried only by `entity_type`/`entity_id`,
   `university_id`, or `actor_user_id`), so it has no `uuid` column.
+- `STUDENT_PROFILES` (Chunk 05) is deliberately **not** the same
+  relationship as `USERS ↔ UNIVERSITY_MEMBERSHIPS` — a membership is the
+  authoritative institutional-affiliation record (Chunk 04); a student
+  profile is the academic-identity detail (program, semester, bio,
+  visibility, ...) that belongs to neither `USERS` nor
+  `UNIVERSITY_MEMBERSHIPS`. `USERS ||--o| STUDENT_PROFILES` is one-to-
+  *at-most-one* (`user_id` is unique) — see
+  [`student-profiles.md`](./student-profiles.md) §3 for the known
+  limitation this simplicity leaves for a future delete/recreate flow.
+  `PROGRAM_ID` is optional; a student without a declared major is valid.
+- `SKILLS`, `INTERESTS`, `RESEARCH_AREAS`, and `LANGUAGES` are reusable,
+  platform-wide catalogs — never comma-separated text on the profile
+  itself. Each has a matching `STUDENT_*` join table
+  (`STUDENT_SKILLS`, `STUDENT_INTERESTS`, `STUDENT_RESEARCH_INTERESTS`,
+  `STUDENT_LANGUAGES`), each enforcing a unique
+  `(student_profile_id, catalog_id)` pair at the database level — a
+  duplicate add is rejected by the schema itself, not only application
+  logic. Unlike `ROLES`/`PERMISSIONS` (addressed by `name`), these four
+  catalogs carry a `uuid`, because the API addresses them directly from
+  a URL (`/api/students/me/skills/:skillId`, etc.) — see
+  `database-guidelines.md` §4 for the general rule.
+- `RESEARCH_AREAS` is self-referential (`parent_id`) to express a
+  hierarchy (Artificial Intelligence → Machine Learning → Deep Learning);
+  `SET NULL` on a parent's removal mirrors the `FACULTIES → DEPARTMENTS`
+  precedent (an optional parent reference clears rather than blocks or
+  cascades).
+- `STUDENT_CERTIFICATIONS`, `STUDENT_ACHIEVEMENTS`, and `STUDENT_GOALS`
+  are standalone records (each addressed by its own `uuid` from a URL),
+  unlike the join tables above — so, consistent with every other
+  externally-addressable entity in this schema, each is `paranoid`
+  (soft-deleted) and carries its own `uuid`.
 
 Full column types, constraints, indexes, and `ON DELETE` behavior are in
 [`../database/schema.sql`](../database/schema.sql) and explained in

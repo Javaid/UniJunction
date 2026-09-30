@@ -4,8 +4,14 @@
  * Chunk 02 scope: Identity (User, Role, UserRole) and Institution
  * (University, Faculty, Department, Program).
  * Chunk 03 scope: RBAC (Permission, RolePermission) and auth token
- * storage (RefreshToken, EmailVerificationToken). See
- * docs/database-guidelines.md for future domains.
+ * storage (RefreshToken, EmailVerificationToken).
+ * Chunk 04 scope: Institutional administration (UniversityDomain,
+ * UniversityMembership, AuditLog).
+ * Chunk 05 scope: Student Academic Profile (StudentProfile, the Skill/
+ * Interest/ResearchArea/Language catalogs and their per-student join
+ * tables, StudentCertification, StudentAchievement, StudentGoal) — see
+ * docs/student-profiles.md. See docs/database-guidelines.md for future
+ * domains.
  *
  * IMPORTANT: this module never calls sequelize.sync(). Schema is created
  * and changed exclusively through /database/schema.sql (and, later, a
@@ -28,6 +34,18 @@ const defineEmailVerificationToken = require('./email-verification-token.model')
 const defineUniversityDomain = require('./university-domain.model');
 const defineUniversityMembership = require('./university-membership.model');
 const defineAuditLog = require('./audit-log.model');
+const defineStudentProfile = require('./student-profile.model');
+const defineSkill = require('./skill.model');
+const defineStudentSkill = require('./student-skill.model');
+const defineInterest = require('./interest.model');
+const defineStudentInterest = require('./student-interest.model');
+const defineResearchArea = require('./research-area.model');
+const defineStudentResearchInterest = require('./student-research-interest.model');
+const defineLanguage = require('./language.model');
+const defineStudentLanguage = require('./student-language.model');
+const defineStudentCertification = require('./student-certification.model');
+const defineStudentAchievement = require('./student-achievement.model');
+const defineStudentGoal = require('./student-goal.model');
 
 const User = defineUser(sequelize);
 const Role = defineRole(sequelize);
@@ -43,6 +61,18 @@ const EmailVerificationToken = defineEmailVerificationToken(sequelize);
 const UniversityDomain = defineUniversityDomain(sequelize);
 const UniversityMembership = defineUniversityMembership(sequelize);
 const AuditLog = defineAuditLog(sequelize);
+const StudentProfile = defineStudentProfile(sequelize);
+const Skill = defineSkill(sequelize);
+const StudentSkill = defineStudentSkill(sequelize);
+const Interest = defineInterest(sequelize);
+const StudentInterest = defineStudentInterest(sequelize);
+const ResearchArea = defineResearchArea(sequelize);
+const StudentResearchInterest = defineStudentResearchInterest(sequelize);
+const Language = defineLanguage(sequelize);
+const StudentLanguage = defineStudentLanguage(sequelize);
+const StudentCertification = defineStudentCertification(sequelize);
+const StudentAchievement = defineStudentAchievement(sequelize);
+const StudentGoal = defineStudentGoal(sequelize);
 
 // ---- Identity: User <-> Role (many-to-many via UserRole) ----------------
 // A pure join table, so both sides cascade if a user or role is ever
@@ -169,6 +199,96 @@ AuditLog.belongsTo(User, { foreignKey: 'actorUserId', as: 'actor' });
 University.hasMany(AuditLog, { foreignKey: 'universityId', as: 'auditLogs', onDelete: 'SET NULL' });
 AuditLog.belongsTo(University, { foreignKey: 'universityId', as: 'university' });
 
+// ---- Student Academic Profile (Chunk 05) -----------------------------------
+// A profile is a per-user artifact, so it cascades with its user (same
+// policy as refresh_tokens/university_memberships). Its university/
+// program references follow the institutional-hierarchy precedent:
+// RESTRICT on university (never let a careless hard delete take a
+// student's academic record down with it), SET NULL on the optional
+// program (mirrors Faculty -> Department/Program).
+User.hasOne(StudentProfile, { foreignKey: 'userId', as: 'studentProfile', onDelete: 'CASCADE' });
+StudentProfile.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+University.hasMany(StudentProfile, {
+  foreignKey: 'universityId',
+  as: 'studentProfiles',
+  onDelete: 'RESTRICT',
+});
+StudentProfile.belongsTo(University, { foreignKey: 'universityId', as: 'university' });
+
+Program.hasMany(StudentProfile, { foreignKey: 'programId', as: 'studentProfiles', onDelete: 'SET NULL' });
+StudentProfile.belongsTo(Program, { foreignKey: 'programId', as: 'program' });
+
+// ---- Skills: reusable catalog + per-student join (Chunk 05) ----------------
+// Both sides CASCADE, same reasoning as user_roles/role_permissions —
+// these are pure relational-fact join rows, not institutional records
+// that need protecting from an upstream deletion.
+StudentProfile.hasMany(StudentSkill, {
+  foreignKey: 'studentProfileId',
+  as: 'studentSkills',
+  onDelete: 'CASCADE',
+});
+StudentSkill.belongsTo(StudentProfile, { foreignKey: 'studentProfileId', as: 'studentProfile' });
+Skill.hasMany(StudentSkill, { foreignKey: 'skillId', as: 'studentSkills', onDelete: 'CASCADE' });
+StudentSkill.belongsTo(Skill, { foreignKey: 'skillId', as: 'skill' });
+
+// ---- Academic interests: catalog + per-student join (Chunk 05) ------------
+StudentProfile.hasMany(StudentInterest, {
+  foreignKey: 'studentProfileId',
+  as: 'studentInterests',
+  onDelete: 'CASCADE',
+});
+StudentInterest.belongsTo(StudentProfile, { foreignKey: 'studentProfileId', as: 'studentProfile' });
+Interest.hasMany(StudentInterest, { foreignKey: 'interestId', as: 'studentInterests', onDelete: 'CASCADE' });
+StudentInterest.belongsTo(Interest, { foreignKey: 'interestId', as: 'interest' });
+
+// ---- Research areas: hierarchical catalog + per-student join (Chunk 05) ---
+ResearchArea.belongsTo(ResearchArea, { foreignKey: 'parentId', as: 'parent' });
+ResearchArea.hasMany(ResearchArea, { foreignKey: 'parentId', as: 'children', onDelete: 'SET NULL' });
+
+StudentProfile.hasMany(StudentResearchInterest, {
+  foreignKey: 'studentProfileId',
+  as: 'studentResearchInterests',
+  onDelete: 'CASCADE',
+});
+StudentResearchInterest.belongsTo(StudentProfile, { foreignKey: 'studentProfileId', as: 'studentProfile' });
+ResearchArea.hasMany(StudentResearchInterest, {
+  foreignKey: 'researchAreaId',
+  as: 'studentResearchInterests',
+  onDelete: 'CASCADE',
+});
+StudentResearchInterest.belongsTo(ResearchArea, { foreignKey: 'researchAreaId', as: 'researchArea' });
+
+// ---- Languages: catalog + per-student join (Chunk 05) ---------------------
+StudentProfile.hasMany(StudentLanguage, {
+  foreignKey: 'studentProfileId',
+  as: 'studentLanguages',
+  onDelete: 'CASCADE',
+});
+StudentLanguage.belongsTo(StudentProfile, { foreignKey: 'studentProfileId', as: 'studentProfile' });
+Language.hasMany(StudentLanguage, { foreignKey: 'languageId', as: 'studentLanguages', onDelete: 'CASCADE' });
+StudentLanguage.belongsTo(Language, { foreignKey: 'languageId', as: 'language' });
+
+// ---- Certifications, achievements, goals (Chunk 05) ------------------------
+// Standalone, owned exclusively by their profile — CASCADE mirrors the
+// per-user-artifact precedent (refresh_tokens, university_memberships).
+StudentProfile.hasMany(StudentCertification, {
+  foreignKey: 'studentProfileId',
+  as: 'certifications',
+  onDelete: 'CASCADE',
+});
+StudentCertification.belongsTo(StudentProfile, { foreignKey: 'studentProfileId', as: 'studentProfile' });
+
+StudentProfile.hasMany(StudentAchievement, {
+  foreignKey: 'studentProfileId',
+  as: 'achievements',
+  onDelete: 'CASCADE',
+});
+StudentAchievement.belongsTo(StudentProfile, { foreignKey: 'studentProfileId', as: 'studentProfile' });
+
+StudentProfile.hasMany(StudentGoal, { foreignKey: 'studentProfileId', as: 'goals', onDelete: 'CASCADE' });
+StudentGoal.belongsTo(StudentProfile, { foreignKey: 'studentProfileId', as: 'studentProfile' });
+
 module.exports = {
   sequelize,
   User,
@@ -185,4 +305,16 @@ module.exports = {
   UniversityDomain,
   UniversityMembership,
   AuditLog,
+  StudentProfile,
+  Skill,
+  StudentSkill,
+  Interest,
+  StudentInterest,
+  ResearchArea,
+  StudentResearchInterest,
+  Language,
+  StudentLanguage,
+  StudentCertification,
+  StudentAchievement,
+  StudentGoal,
 };

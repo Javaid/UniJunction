@@ -92,23 +92,26 @@ Request → helmet → cors → body parsing → morgan (logging)
 ### Domain modules
 
 `server/src/modules/` is the seam for self-contained domains. Implemented
-so far: `auth` (Chunk 03 — registration, login, tokens, RBAC middleware)
-and `university` (Chunk 04 — universities, faculties, departments,
-programs, domains, memberships; see
-[`university-management.md`](./university-management.md)). Each is
-self-contained (controller, routes, service, validator, and — for
-`university` — its own middleware) and mounted in
+so far: `auth` (Chunk 03 — registration, login, tokens, RBAC middleware),
+`university` (Chunk 04 — universities, faculties, departments, programs,
+domains, memberships; see
+[`university-management.md`](./university-management.md)), and `student`
+(Chunk 05 — student academic profiles, skills/interests/research-areas/
+languages catalogs, certifications, achievements, goals; see
+[`student-profiles.md`](./student-profiles.md)). Each is self-contained
+(controller, routes, service, validator, and its own middleware/
+access-service where the domain needs one) and mounted in
 `server/src/routes/index.js` with a single line, e.g.:
 
 ```js
 router.use('/auth', authRoutes);
 router.use('/universities', universityRoutes);
+router.use('/students', studentRoutes);
 ```
 
-Still unimplemented, reserved for future chunks: `students`, `faculty`,
-`researchers`, `skills`, `interests`, `research`, `projects`,
-`connections`, `mentorship`, `messaging`, `events`, `opportunities`,
-`notifications`.
+Still unimplemented, reserved for future chunks: `faculty`/`researcher`
+profiles, `research`, `projects`, `connections`, `mentorship`,
+`messaging`, `events`, `opportunities`, `notifications`.
 
 ## 4. Database Strategy
 
@@ -128,7 +131,12 @@ Still unimplemented, reserved for future chunks: `students`, `faculty`,
   `Permission`, `RolePermission`, `RefreshToken`, `EmailVerificationToken`
   (Chunk 03 — RBAC and auth tokens), plus `UniversityDomain`,
   `UniversityMembership`, `AuditLog` (Chunk 04 — institutional management,
-  see [`university-management.md`](./university-management.md)). See
+  see [`university-management.md`](./university-management.md)), plus
+  `StudentProfile`, `Skill`, `StudentSkill`, `Interest`,
+  `StudentInterest`, `ResearchArea`, `StudentResearchInterest`,
+  `Language`, `StudentLanguage`, `StudentCertification`,
+  `StudentAchievement`, `StudentGoal` (Chunk 05 — student academic
+  profile, see [`student-profiles.md`](./student-profiles.md)). See
   [`database-guidelines.md`](./database-guidelines.md) for naming
   conventions, the primary-key strategy, foreign-key/soft-delete
   behavior, indexing, and multi-tenancy, and
@@ -286,3 +294,66 @@ messaging, events, opportunities, AI/recommendations, a social feed, SSO/
 OAuth, or a mobile app. See
 [`university-management.md`](./university-management.md) §16 for the
 complete list and the reasoning.
+
+## 12. Chunk 05 — Student Academic Profile
+
+Chunk 05 added the Student Academic Profile domain: the profile itself
+(academic identity, program, semester, bio, headline, visibility,
+availability), a reusable skills/interests/research-areas/languages
+catalog with per-student join tables, certifications, achievements,
+academic goals, server-calculated profile completeness, centralized
+visibility enforcement, and a foundational university-admin student
+roster. Full design detail lives in
+[`student-profiles.md`](./student-profiles.md); summarized here:
+
+- **New backend module:** `server/src/modules/student/` (self-contained:
+  controllers, services, validators, routes, an access-service for the
+  student-specific role+membership check, and a serializer centralizing
+  every visibility decision), following the same modular-monolith
+  convention as `server/src/modules/auth/` and `.../university/`.
+- **Three separate concepts, kept separate:** `users` (identity),
+  `university_memberships` (institutional affiliation — still
+  authoritative, unchanged from Chunk 04), and `student_profiles`
+  (academic detail). The profile references its university and program
+  for efficient querying, but the membership table remains the source of
+  truth for *is this person actually affiliated here* — validated at
+  profile-creation time, never assumed from a client-supplied id.
+- **Centralized visibility:** `resolveStudentProfileAccess()`
+  (`server/src/modules/student/student-profile.serializer.js`) is the
+  single function every read path funnels through — never duplicated
+  per-controller. Institutional oversight (`SUPER_ADMIN`, the student's
+  own `UNIVERSITY_ADMIN`) always wins over the owner's visibility choice;
+  denial is `404`, matching Chunk 04's own cross-tenant-access precedent.
+- **Catalogs, not comma-separated fields:** skills, interests, research
+  areas (hierarchical, self-referential), and languages are each a
+  normalized, platform-wide catalog table plus a per-student join table
+  with a database-level unique constraint preventing duplicates — see
+  `database-guidelines.md` §8/§15 and `student-profiles.md` §13.
+- **New tables:** `student_profiles`, `skills`, `student_skills`,
+  `interests`, `student_interests`, `research_areas`,
+  `student_research_interests`, `languages`, `student_languages`,
+  `student_certifications`, `student_achievements`, `student_goals` —
+  see `database-guidelines.md` and `database-erd.md`.
+- **Second migration:** `database/migrations/002_chunk05_student_profiles.sql`
+  upgrades an existing Chunk 02–04 database (new tables only, no
+  `ALTER TABLE`); `database/schema.sql` remains the fresh-install source
+  of truth. A new seed file, `database/seed_catalog.sql`, populates the
+  initial skills/interests/research-areas/languages catalog, the same
+  pattern as `seed_rbac.sql` for roles/permissions.
+- **Frontend:** a `/student/profile` section (`StudentRoute` +
+  `StudentProfileLayout`) covering the profile read view (with a
+  backend-calculated completeness widget), a sectioned edit form, and
+  dedicated skills/interests/research/certifications/achievements/goals
+  pages, plus a `/university/students` roster page for
+  `UNIVERSITY_ADMIN`s reachable from `AdminLayout`'s sidebar.
+
+### What Chunk 05 Deliberately Does Not Include
+
+Faculty/researcher profiles, research projects, student projects,
+project applications, mentorship, connections, messaging, events,
+opportunities, AI matching, a recommendation engine, advanced search, a
+dedicated search engine, file uploads, a resume builder, a social feed,
+or SSO. See [`student-profiles.md`](./student-profiles.md) §16 for the
+complete list and the reasoning, and §17 for how the schema is
+positioned for a future search/discovery layer without needing a schema
+change to get there.

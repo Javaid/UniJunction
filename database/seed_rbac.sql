@@ -2,6 +2,7 @@
 -- Academic Connect — RBAC catalog
 -- Chunk 03: initial roles/permissions
 -- Chunk 04: institutional management permissions + role mapping updates
+-- Chunk 05: STUDENT_PROFILE_VIEW (admin oversight of student profiles)
 --
 -- Populates the fixed starting set of roles, permissions, and their
 -- mapping. This is reference/catalog data, not sample or fake production
@@ -9,8 +10,9 @@
 -- registration has no STUDENT role to assign without this).
 --
 -- Idempotent: safe to run multiple times. Run this AFTER schema.sql (and
--- after database/migrations/001_chunk04_institution_management.sql if
--- upgrading an existing Chunk 02/03 database).
+-- after database/migrations/001_chunk04_institution_management.sql and
+-- database/migrations/002_chunk05_student_profiles.sql if upgrading an
+-- existing pre-Chunk-05 database).
 --
 -- Usage:
 --   mysql -h <DB_HOST> -P <DB_PORT> -u <DB_USER> -p <DB_NAME> < database/seed_rbac.sql
@@ -54,7 +56,9 @@ INSERT INTO permissions (name, description) VALUES
   ('PROGRAM_VIEW', 'View program records'),
   ('PROGRAM_CREATE', 'Create program records'),
   ('PROGRAM_UPDATE', 'Update program records'),
-  ('PROGRAM_STATUS_UPDATE', 'Change a program''s status')
+  ('PROGRAM_STATUS_UPDATE', 'Change a program''s status'),
+  -- Chunk 05: student academic profile
+  ('STUDENT_PROFILE_VIEW', 'View student academic profiles at institutional-admin level')
 ON DUPLICATE KEY UPDATE description = VALUES(description);
 
 -- Role -> permission mapping (see docs/authentication.md and
@@ -65,6 +69,16 @@ ON DUPLICATE KEY UPDATE description = VALUES(description);
 -- Deliberately NOT given to UNIVERSITY_ADMIN (chunk brief §30):
 -- UNIVERSITY_CREATE, UNIVERSITY_VERIFY, UNIVERSITY_STATUS_UPDATE,
 -- UNIVERSITY_ADMIN_ASSIGN — these remain SUPER_ADMIN-only.
+--
+-- STUDENT_PROFILE_VIEW (Chunk 05) is granted only to SUPER_ADMIN and
+-- UNIVERSITY_ADMIN, for the admin student-list endpoint
+-- (GET /api/universities/:universityId/students) — see
+-- docs/student-profiles.md, "Authorization". A student's OWN profile
+-- self-service (create/update/skills/interests/...) is not gated by a
+-- permission at all: it's `requireAuth` plus a service-layer check that
+-- the caller holds the STUDENT role and an active STUDENT membership at
+-- the target university, the same "me" pattern as
+-- university_memberships' own /users/me/universities endpoint.
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id
 FROM roles r
@@ -78,7 +92,8 @@ JOIN permissions p
         'UNIVERSITY_DOMAIN_VIEW', 'UNIVERSITY_DOMAIN_MANAGE',
         'FACULTY_VIEW', 'FACULTY_CREATE', 'FACULTY_UPDATE', 'FACULTY_STATUS_UPDATE',
         'DEPARTMENT_VIEW', 'DEPARTMENT_CREATE', 'DEPARTMENT_UPDATE', 'DEPARTMENT_STATUS_UPDATE',
-        'PROGRAM_VIEW', 'PROGRAM_CREATE', 'PROGRAM_UPDATE', 'PROGRAM_STATUS_UPDATE'
+        'PROGRAM_VIEW', 'PROGRAM_CREATE', 'PROGRAM_UPDATE', 'PROGRAM_STATUS_UPDATE',
+        'STUDENT_PROFILE_VIEW'
       ))
   OR (r.name = 'UNIVERSITY_ADMIN' AND p.name IN (
         'USER_VIEW',
@@ -88,7 +103,8 @@ JOIN permissions p
         'UNIVERSITY_DOMAIN_VIEW', 'UNIVERSITY_DOMAIN_MANAGE',
         'FACULTY_VIEW', 'FACULTY_CREATE', 'FACULTY_UPDATE', 'FACULTY_STATUS_UPDATE',
         'DEPARTMENT_VIEW', 'DEPARTMENT_CREATE', 'DEPARTMENT_UPDATE', 'DEPARTMENT_STATUS_UPDATE',
-        'PROGRAM_VIEW', 'PROGRAM_CREATE', 'PROGRAM_UPDATE', 'PROGRAM_STATUS_UPDATE'
+        'PROGRAM_VIEW', 'PROGRAM_CREATE', 'PROGRAM_UPDATE', 'PROGRAM_STATUS_UPDATE',
+        'STUDENT_PROFILE_VIEW'
       ))
   OR (r.name = 'STUDENT' AND p.name IN ('USER_VIEW', 'UNIVERSITY_VIEW'))
   OR (r.name = 'FACULTY' AND p.name IN ('USER_VIEW', 'UNIVERSITY_VIEW'))

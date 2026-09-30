@@ -63,6 +63,7 @@ const INITIAL_PERMISSIONS = [
   'PROGRAM_CREATE',
   'PROGRAM_UPDATE',
   'PROGRAM_STATUS_UPDATE',
+  'STUDENT_PROFILE_VIEW',
 ];
 
 // Mirrors database/seed_rbac.sql exactly (§29/§30) — see
@@ -98,6 +99,7 @@ const ROLE_PERMISSION_MAP = {
     'PROGRAM_CREATE',
     'PROGRAM_UPDATE',
     'PROGRAM_STATUS_UPDATE',
+    'STUDENT_PROFILE_VIEW',
   ],
   UNIVERSITY_ADMIN: [
     'USER_VIEW',
@@ -121,6 +123,7 @@ const ROLE_PERMISSION_MAP = {
     'PROGRAM_CREATE',
     'PROGRAM_UPDATE',
     'PROGRAM_STATUS_UPDATE',
+    'STUDENT_PROFILE_VIEW',
   ],
   STUDENT: ['USER_VIEW', 'UNIVERSITY_VIEW'],
   FACULTY: ['USER_VIEW', 'UNIVERSITY_VIEW'],
@@ -150,16 +153,60 @@ const seedRbac = async () => {
   }
 };
 
+/**
+ * Runs a sequence of raw statements against a single pinned connection
+ * (via a real transaction) rather than sequelize.query() calls made
+ * independently — which may each be handed a *different* pooled
+ * connection. That distinction matters here specifically because
+ * `SET FOREIGN_KEY_CHECKS = 0` is connection/session-scoped: setting it
+ * on one connection and then running a DELETE on another leaves that
+ * DELETE fully subject to real FK enforcement, which surfaces as a
+ * flaky "foreign key constraint fails" error only under enough
+ * concurrent test-suite load to exhaust the idle-connection reuse that
+ * normally papers over it. Wrapping the whole sequence in one
+ * transaction guarantees every statement in it runs on the same
+ * connection.
+ */
+const runWithForeignKeyChecksDisabled = async (statements) => {
+  await sequelize.transaction(async (transaction) => {
+    await sequelize.query('SET FOREIGN_KEY_CHECKS = 0', { transaction });
+    for (const statement of statements) {
+      await sequelize.query(statement, { transaction });
+    }
+    await sequelize.query('SET FOREIGN_KEY_CHECKS = 1', { transaction });
+  });
+};
+
+/**
+ * Wipes per-run student-profile data (Chunk 05). Catalog tables (skills,
+ * interests, research_areas, languages) are left alone, same reasoning
+ * as resetInstitutionTables leaving roles/permissions alone — they're
+ * reference data, not per-test fixtures. Exported separately so a test
+ * file that only touches this domain doesn't have to reset the others,
+ * but resetInstitutionTables also calls it internally (see below) since
+ * student_profiles now depends on universities/programs.
+ */
+const resetStudentProfileTables = async () => {
+  await runWithForeignKeyChecksDisabled([
+    'DELETE FROM student_skills',
+    'DELETE FROM student_interests',
+    'DELETE FROM student_research_interests',
+    'DELETE FROM student_languages',
+    'DELETE FROM student_certifications',
+    'DELETE FROM student_achievements',
+    'DELETE FROM student_goals',
+    'DELETE FROM student_profiles',
+  ]);
+};
+
 /** Wipes per-run auth data. Reference tables (roles/permissions) are left alone. */
 const resetAuthTables = async () => {
-  await sequelize.query('SET FOREIGN_KEY_CHECKS = 0');
-  await Promise.all(
-    ['refresh_tokens', 'email_verification_tokens', 'user_roles'].map((table) =>
-      sequelize.query(`DELETE FROM ${table}`)
-    )
-  );
-  await sequelize.query('DELETE FROM users');
-  await sequelize.query('SET FOREIGN_KEY_CHECKS = 1');
+  await runWithForeignKeyChecksDisabled([
+    'DELETE FROM refresh_tokens',
+    'DELETE FROM email_verification_tokens',
+    'DELETE FROM user_roles',
+    'DELETE FROM users',
+  ]);
 };
 
 /**
@@ -167,17 +214,22 @@ const resetAuthTables = async () => {
  * resetAuthTables since not every test file needs universities, and
  * university rows are also referenced by user_roles-adjacent fixtures in
  * some auth tests — clearing it unconditionally there would be a
- * behavior change to already-passing Chunk 03 tests.
+ * behavior change to already-passing Chunk 03 tests. Clears
+ * student_profiles (Chunk 05) first — universities.id RESTRICTs a
+ * student_profiles.university_id reference, so a leftover profile from
+ * another test file would otherwise block `DELETE FROM universities`.
  */
 const resetInstitutionTables = async () => {
-  await sequelize.query('SET FOREIGN_KEY_CHECKS = 0');
-  await Promise.all(
-    ['audit_logs', 'university_memberships', 'university_domains', 'programs', 'departments', 'faculties'].map(
-      (table) => sequelize.query(`DELETE FROM ${table}`)
-    )
-  );
-  await sequelize.query('DELETE FROM universities');
-  await sequelize.query('SET FOREIGN_KEY_CHECKS = 1');
+  await resetStudentProfileTables();
+  await runWithForeignKeyChecksDisabled([
+    'DELETE FROM audit_logs',
+    'DELETE FROM university_memberships',
+    'DELETE FROM university_domains',
+    'DELETE FROM programs',
+    'DELETE FROM departments',
+    'DELETE FROM faculties',
+    'DELETE FROM universities',
+  ]);
 };
 
 /**
@@ -197,4 +249,11 @@ const itIfDb = (dbReadyGetter) => (name, fn) => {
   });
 };
 
-module.exports = { isDbAvailable, seedRbac, resetAuthTables, resetInstitutionTables, itIfDb };
+module.exports = {
+  isDbAvailable,
+  seedRbac,
+  resetAuthTables,
+  resetInstitutionTables,
+  resetStudentProfileTables,
+  itIfDb,
+};
